@@ -99,7 +99,7 @@ $(document).ready(function() {
 // Load dictionary from file
 async function loadDictionary() {
     try {
-        const response = await fetch('/dictionary.txt');
+        const response = await fetch('public/dictionary.txt');
         const text = await response.text();
         const words = text.split('\n').map(word => word.trim()).filter(word => word.length > 0);
         words.forEach(word => dictionary.add(word));
