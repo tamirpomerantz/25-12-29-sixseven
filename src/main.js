@@ -109,6 +109,120 @@ async function loadDictionary() {
     }
 }
 
+// Find the closest grid cell to the dragged element
+function findClosestCell(dragX, dragY) {
+    let closestCell = null;
+    let minDistance = Infinity;
+    
+    $('.grid-cell').each(function() {
+        const $cell = $(this);
+        const cellOffset = $cell.offset();
+        const cellWidth = $cell.outerWidth();
+        const cellHeight = $cell.outerHeight();
+        
+        // Calculate center of cell
+        const cellCenterX = cellOffset.left + cellWidth / 2;
+        const cellCenterY = cellOffset.top + cellHeight / 2;
+        
+        // Calculate distance from drag position to cell center
+        const distance = Math.sqrt(
+            Math.pow(dragX - cellCenterX, 2) + 
+            Math.pow(dragY - cellCenterY, 2)
+        );
+        
+        // Check if drag position is within cell bounds (with some tolerance)
+        const tolerance = Math.max(cellWidth, cellHeight) * 0.8;
+        if (distance < tolerance && distance < minDistance) {
+            minDistance = distance;
+            closestCell = $cell;
+        }
+    });
+    
+    return closestCell;
+}
+
+// Helper function to make elements draggable with touch support
+function makeDraggable($element) {
+    let closestCell = null;
+    
+    $element.draggable({
+        revert: 'invalid',
+        cursor: 'move',
+        distance: 0, // Immediate response on touch
+        delay: 0, // No delay for touch
+        scroll: false, // Prevent page scrolling during drag
+        helper: function() {
+            return $(this);
+        },
+        start: function(event, ui) {
+            // Prevent default touch behaviors
+            if (event.originalEvent && event.originalEvent.touches) {
+                event.originalEvent.preventDefault();
+            }
+            const $tile = $(this);
+            if ($tile.parent().hasClass('letter-stock')) {
+                $tile.css('opacity', '0.5');
+            }
+            // Prevent body scroll during drag
+            $('body').css('overflow', 'hidden');
+            // Add visual feedback
+            $tile.addClass('dragging');
+            // Clear any existing highlights
+            $('.grid-cell').removeClass('ui-droppable-hover');
+            closestCell = null;
+        },
+        drag: function(event, ui) {
+            // Prevent default touch behaviors during drag
+            if (event.originalEvent && event.originalEvent.touches) {
+                event.originalEvent.preventDefault();
+            }
+            
+            // Calculate position of dragged element
+            const dragX = ui.position.left + ui.helper.outerWidth() / 2;
+            const dragY = ui.position.top + ui.helper.outerHeight() / 2;
+            
+            // Convert to page coordinates
+            const $helper = ui.helper;
+            const helperOffset = $helper.offset();
+            const pageX = helperOffset.left + $helper.outerWidth() / 2;
+            const pageY = helperOffset.top + $helper.outerHeight() / 2;
+            
+            // Find closest cell
+            const newClosestCell = findClosestCell(pageX, pageY);
+            
+            // Update highlight
+            if (newClosestCell !== closestCell) {
+                // Remove highlight from previous cell
+                if (closestCell) {
+                    closestCell.removeClass('ui-droppable-hover');
+                }
+                // Add highlight to new closest cell
+                if (newClosestCell) {
+                    newClosestCell.addClass('ui-droppable-hover');
+                }
+                closestCell = newClosestCell;
+            }
+        },
+        stop: function(event, ui) {
+            // Remove highlight from closest cell
+            if (closestCell) {
+                closestCell.removeClass('ui-droppable-hover');
+                closestCell = null;
+            }
+            // Clear all highlights
+            $('.grid-cell').removeClass('ui-droppable-hover');
+            // Restore body scroll
+            $('body').css('overflow', '');
+            // Remove visual feedback
+            $(this).removeClass('dragging');
+            // If revert happened, restore opacity
+            if ($(this).parent().hasClass('letter-stock')) {
+                $(this).css('opacity', '1');
+            }
+        }
+    });
+}
+
 // Initialize 7x7 game board
 function initializeBoard() {
     const gameBoard = $('#gameBoard');
@@ -124,7 +238,7 @@ function initializeBoard() {
         }
     }
     
-    // Make grid cells droppable
+    // Make grid cells droppable (touch-optimized)
     $('.grid-cell').droppable({
         accept: '.letter-tile',
         tolerance: 'pointer',
@@ -150,33 +264,13 @@ function initializeLetterStock() {
         letterStockContainer.append(tile);
     });
     
-    // Make letter tiles draggable
-    $('.letter-tile').draggable({
-        revert: 'invalid',
-        cursor: 'move',
-        helper: function() {
-            // Return the actual element, not a clone
-            return $(this);
-        },
-        start: function(event, ui) {
-            // Store original position and make it invisible in stock
-            const $tile = $(this);
-            if ($tile.parent().hasClass('letter-stock')) {
-                $tile.css('opacity', '0.5');
-            }
-        },
-        stop: function(event, ui) {
-            // If revert happened, restore opacity
-            if ($(this).parent().hasClass('letter-stock')) {
-                $(this).css('opacity', '1');
-            }
-        }
-    });
+    // Make letter tiles draggable (touch-optimized)
+    makeDraggable($('.letter-tile'));
 }
 
 // Get color for letter tile (same color for all)
 function getLetterColor(letter) {
-    return '#4ECDC4'; // Same color for all letters
+    return '#333333'; // Same color for all letters
 }
 
 // Handle drop event
@@ -211,7 +305,7 @@ function handleDrop(cell, draggable) {
                 .css({
                     width: '100%',
                     height: '100%',
-                    minHeight: '40px',
+                    minHeight: '48px',
                     visibility: 'hidden'
                 });
             draggable.after(placeholder);
@@ -229,13 +323,7 @@ function handleDrop(cell, draggable) {
             board[row][col] = letter;
             
             // Make tile draggable for repositioning
-            draggable.draggable({
-                revert: 'invalid',
-                cursor: 'move',
-                helper: function() {
-                    return $(this);
-                }
-            });
+            makeDraggable(draggable);
             
             // Place existing letter back in stock (maintain position)
             const existingTile = $('<div>')
@@ -247,23 +335,7 @@ function handleDrop(cell, draggable) {
             placeholder.remove();
             
             // Make existing tile draggable
-            existingTile.draggable({
-                revert: 'invalid',
-                cursor: 'move',
-                helper: function() {
-                    return $(this);
-                },
-                start: function(event, ui) {
-                    if ($(this).parent().hasClass('letter-stock')) {
-                        $(this).css('opacity', '0.5');
-                    }
-                },
-                stop: function(event, ui) {
-                    if ($(this).parent().hasClass('letter-stock')) {
-                        $(this).css('opacity', '1');
-                    }
-                }
-            });
+            makeDraggable(existingTile);
         } else {
             // Moving from board to board - swap
             const oldRow = parseInt(draggable.attr('data-row'));
@@ -295,13 +367,7 @@ function handleDrop(cell, draggable) {
                 .css('background-color', getLetterColor(existingLetter));
             oldCell.append(oldTile);
             board[oldRow][oldCol] = existingLetter;
-            oldTile.draggable({
-                revert: 'invalid',
-                cursor: 'move',
-                helper: function() {
-                    return $(this);
-                }
-            });
+            makeDraggable(oldTile);
         }
         
         return;
@@ -320,12 +386,12 @@ function handleDrop(cell, draggable) {
         // Add placeholder to maintain position in stock
         const placeholder = $('<div>')
             .addClass('letter-placeholder')
-            .css({
-                width: '100%',
-                height: '100%',
-                minHeight: '40px',
-                visibility: 'hidden'
-            });
+                .css({
+                    width: '100%',
+                    height: '100%',
+                    minHeight: '48px',
+                    visibility: 'hidden'
+                });
         draggable.after(placeholder);
         
         // Move actual tile (not clone) to board
@@ -342,13 +408,7 @@ function handleDrop(cell, draggable) {
         board[row][col] = letter;
         
         // Make tile draggable for repositioning
-        draggable.draggable({
-            revert: 'invalid',
-            cursor: 'move',
-            helper: function() {
-                return $(this);
-            }
-        });
+        makeDraggable(draggable);
     } else {
         // Moving from board to board
         const oldRow = parseInt(draggable.attr('data-row'));
