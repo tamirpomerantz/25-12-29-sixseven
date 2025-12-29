@@ -397,11 +397,6 @@ function initializeLetterStock() {
     makeDraggable($('.letter-tile'));
 }
 
-// Get color for letter tile (same color for all)
-function getLetterColor(letter) {
-    return '#333333'; // Same color for all letters
-}
-
 // Create a letter tile with unique ID
 function createLetterTile(letter) {
     const tileId = `tile-${tileIdCounter++}`;
@@ -410,7 +405,6 @@ function createLetterTile(letter) {
         .text(letter)
         .attr('data-letter', letter)
         .attr('data-tile-id', tileId)
-        .css('background-color', getLetterColor(letter));
     
     // Store tile data
     tileData[tileId] = {
@@ -436,7 +430,6 @@ function rebuildLetterStock() {
                 .text(tileInfo.letter)
                 .attr('data-letter', tileInfo.letter)
                 .attr('data-tile-id', tileId)
-                .css('background-color', getLetterColor(tileInfo.letter));
             
             // Update tile data
             tileData[tileId].element = tile;
@@ -601,7 +594,6 @@ function handleDrop(cell, draggable) {
                     .text(existingLetter)
                     .attr('data-letter', existingLetter)
                     .attr('data-tile-id', existingTileId)
-                    .css('background-color', getLetterColor(existingLetter));
                 tileData[existingTileId].element = existingTileElement;
                 placeholder.before(existingTileElement);
                 placeholder.remove();
@@ -644,7 +636,6 @@ function handleDrop(cell, draggable) {
                     .attr('data-tile-id', existingTileId)
                     .attr('data-row', oldRow)
                     .attr('data-col', oldCol)
-                    .css('background-color', getLetterColor(existingLetter));
                 tileData[existingTileId].element = oldTile;
                 oldCell.append(oldTile);
                 board[oldRow][oldCol] = existingTileId; // Store tile ID
@@ -881,8 +872,9 @@ $('#finishBtn').on('click', function() {
         e.stopPropagation();
     });
     
-    // Update score display
+    // Update score display and show it
     const scoreDisplay = $('#scoreDisplay');
-    scoreDisplay.html(`<p><strong>סה"כ: ${result.totalScore} נקודות</strong></p>`);
+    scoreDisplay.html(`<p><strong>${result.totalScore} נקודות</strong></p>`);
+    scoreDisplay.show(); // Show the score display
 });
 
