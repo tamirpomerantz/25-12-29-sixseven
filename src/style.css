@@ -47,7 +47,6 @@ h1 {
 
 .grid-cell {
     background-color: white;
-    border: 1px solid #ccc;
     min-height: 48px;
     display: flex;
     align-items: center;
@@ -60,13 +59,8 @@ h1 {
 
 .grid-cell.ui-droppable-hover {
     background-color: #e3f2fd;
-    border-color: #2196F3;
-    border-width: 2px;
-}
-
-.grid-cell.ui-droppable-active {
-    /* background-color: #bbdefb; */
-    /* border-color: #1976D2; */
+    /* border-color: #2196F3; */
+    /* border-width: 2px; */
 }
 
 .letter-tile {
@@ -122,6 +116,7 @@ h1 {
 .letter-stock {
     display: grid;
     grid-template-columns: repeat(6, 1fr);
+    grid-auto-rows: 48px; /* Fixed row height */
     gap: 10px;
     margin-bottom: 20px;
     padding: 12px;
@@ -130,6 +125,22 @@ h1 {
     justify-items: center;
     align-items: center;
     touch-action: none; /* Prevent touch scrolling on stock */
+    min-height: calc(48px * 2 + 10px + 24px); /* Ensure 2 rows height */
+    max-height: calc(48px * 2 + 10px + 24px); /* Prevent more than 2 rows */
+}
+
+.letter-stock.ui-droppable-hover {
+    background-color: #e3f2fd;
+    /* border: 2px solid #2196F3; */
+}
+
+.letter-tile-placeholder {
+    width: 48px;
+    height: 48px;
+    background-color: rgba(33, 150, 243, 0.2);
+    border: 2px dashed #2196F3;
+    border-radius: 4px;
+    visibility: visible !important;
 }
 
 .controls {
@@ -374,7 +385,7 @@ h1 {
     .letter-tile {
         width: 48px;
         height: 48px;
-        font-size: 1.2em;
+        font-size: 32px;
     }
     
     .letter-stock {

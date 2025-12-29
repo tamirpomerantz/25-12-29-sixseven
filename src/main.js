@@ -27,9 +27,11 @@ const letterDistribution = {
 // Game state
 let letters = []; // Will be generated based on date
 let board = Array(7).fill(null).map(() => Array(7).fill(null));
-let letterStock = [];
+let letterStock = []; // Array of tile IDs
 let scores = [];
 let dictionary = new Set();
+let tileIdCounter = 0; // Counter for unique tile IDs
+let tileData = {}; // Map of tileId -> {letter, element}
 
 // Seeded random number generator
 function seededRandom(seed) {
@@ -89,7 +91,7 @@ function generateLettersForDate() {
 $(document).ready(function() {
     // Generate letters based on today's date
     letters = generateLettersForDate();
-    letterStock = [...letters];
+    // letterStock will be populated in initializeLetterStock with tile IDs
     
     loadDictionary();
     initializeBoard();
@@ -148,19 +150,28 @@ function makeDraggable($element) {
     $element.draggable({
         revert: 'invalid',
         cursor: 'move',
-        distance: 0, // Immediate response on touch
+        distance: 10, // Require small movement to start drag (distinguish from sortable)
         delay: 0, // No delay for touch
         scroll: false, // Prevent page scrolling during drag
         helper: function() {
             return $(this);
         },
         start: function(event, ui) {
+            const $tile = $(this);
+            const isInStock = $tile.parent().hasClass('letter-stock');
+            
+            // Store if we started from stock
+            if (isInStock) {
+                $tile.data('was-in-stock', true);
+                $tile.parent().sortable('disable');
+            }
+            
             // Prevent default touch behaviors
             if (event.originalEvent && event.originalEvent.touches) {
                 event.originalEvent.preventDefault();
             }
-            const $tile = $(this);
-            if ($tile.parent().hasClass('letter-stock')) {
+            
+            if (isInStock) {
                 $tile.css('opacity', '0.5');
             }
             // Prevent body scroll during drag
@@ -177,6 +188,28 @@ function makeDraggable($element) {
                 event.originalEvent.preventDefault();
             }
             
+            const $tile = $(this);
+            const isInStock = $tile.parent().hasClass('letter-stock');
+            
+            // If dragging from stock and still within stock area, cancel draggable and let sortable handle it
+            if (isInStock) {
+                const $letterStock = $('#letterStock');
+                const stockOffset = $letterStock.offset();
+                const stockWidth = $letterStock.outerWidth();
+                const stockHeight = $letterStock.outerHeight();
+                
+                const pageX = event.pageX || (event.originalEvent.touches && event.originalEvent.touches[0].pageX);
+                const pageY = event.pageY || (event.originalEvent.touches && event.originalEvent.touches[0].pageY);
+                
+                const isOverStock = pageX >= stockOffset.left && 
+                                   pageX <= stockOffset.left + stockWidth &&
+                                   pageY >= stockOffset.top && 
+                                   pageY <= stockOffset.top + stockHeight;
+                
+                // If still over stock, this should be handled by sortable, not draggable
+                // But we'll let it continue and handle in stop
+            }
+            
             // Calculate position of dragged element
             const dragX = ui.position.left + ui.helper.outerWidth() / 2;
             const dragY = ui.position.top + ui.helper.outerHeight() / 2;
@@ -187,23 +220,77 @@ function makeDraggable($element) {
             const pageX = helperOffset.left + $helper.outerWidth() / 2;
             const pageY = helperOffset.top + $helper.outerHeight() / 2;
             
-            // Find closest cell
-            const newClosestCell = findClosestCell(pageX, pageY);
+            // Check if over letter stock
+            const $letterStock = $('#letterStock');
+            const stockOffset = $letterStock.offset();
+            const stockWidth = $letterStock.outerWidth();
+            const stockHeight = $letterStock.outerHeight();
+            const isOverStock = pageX >= stockOffset.left && 
+                               pageX <= stockOffset.left + stockWidth &&
+                               pageY >= stockOffset.top && 
+                               pageY <= stockOffset.top + stockHeight;
             
-            // Update highlight
-            if (newClosestCell !== closestCell) {
-                // Remove highlight from previous cell
+            if (isOverStock) {
+                // Highlight stock instead of cells
                 if (closestCell) {
                     closestCell.removeClass('ui-droppable-hover');
+                    closestCell = null;
                 }
-                // Add highlight to new closest cell
-                if (newClosestCell) {
-                    newClosestCell.addClass('ui-droppable-hover');
+                $letterStock.addClass('ui-droppable-hover');
+            } else {
+                // Remove stock highlight
+                $letterStock.removeClass('ui-droppable-hover');
+                
+                // Find closest cell
+                const newClosestCell = findClosestCell(pageX, pageY);
+                
+                // Update highlight
+                if (newClosestCell !== closestCell) {
+                    // Remove highlight from previous cell
+                    if (closestCell) {
+                        closestCell.removeClass('ui-droppable-hover');
+                    }
+                    // Add highlight to new closest cell
+                    if (newClosestCell) {
+                        newClosestCell.addClass('ui-droppable-hover');
+                    }
+                    closestCell = newClosestCell;
                 }
-                closestCell = newClosestCell;
             }
         },
         stop: function(event, ui) {
+            const $tile = $(this);
+            const wasInStock = $tile.data('was-in-stock') || $tile.parent().hasClass('letter-stock');
+            const $letterStock = $('#letterStock');
+            
+            // Check if dropped back into stock
+            const stockOffset = $letterStock.offset();
+            const stockWidth = $letterStock.outerWidth();
+            const stockHeight = $letterStock.outerHeight();
+            const pageX = event.pageX || (event.originalEvent.touches && event.originalEvent.touches[0].pageX);
+            const pageY = event.pageY || (event.originalEvent.touches && event.originalEvent.touches[0].pageY);
+            const isOverStock = pageX >= stockOffset.left && 
+                               pageX <= stockOffset.left + stockWidth &&
+                               pageY >= stockOffset.top && 
+                               pageY <= stockOffset.top + stockHeight;
+            
+            // If was in stock and dropped back in stock, rebuild to ensure grid positioning
+            if (wasInStock && isOverStock && !$tile.parent().hasClass('grid-cell')) {
+                // Re-enable sortable
+                $letterStock.sortable('enable');
+                // Rebuild stock to ensure proper grid positioning
+                rebuildLetterStock();
+                // Clear drag data
+                $tile.removeData('was-in-stock');
+                $tile.removeData('drag-start-pos');
+                return;
+            }
+            
+            // Re-enable sortable if we were dragging from stock
+            if (wasInStock) {
+                $letterStock.sortable('enable');
+            }
+            
             // Remove highlight from closest cell
             if (closestCell) {
                 closestCell.removeClass('ui-droppable-hover');
@@ -211,13 +298,17 @@ function makeDraggable($element) {
             }
             // Clear all highlights
             $('.grid-cell').removeClass('ui-droppable-hover');
+            $('#letterStock').removeClass('ui-droppable-hover');
             // Restore body scroll
             $('body').css('overflow', '');
             // Remove visual feedback
-            $(this).removeClass('dragging');
+            $tile.removeClass('dragging');
+            // Clear drag data
+            $tile.removeData('was-in-stock');
+            $tile.removeData('drag-start-pos');
             // If revert happened, restore opacity
-            if ($(this).parent().hasClass('letter-stock')) {
-                $(this).css('opacity', '1');
+            if (wasInStock && $tile.parent().hasClass('letter-stock')) {
+                $tile.css('opacity', '1');
             }
         }
     });
@@ -252,19 +343,57 @@ function initializeBoard() {
 function initializeLetterStock() {
     const letterStockContainer = $('#letterStock');
     letterStockContainer.empty();
+    letterStock = []; // Reset stock array
+    tileData = {}; // Reset tile data
+    tileIdCounter = 0; // Reset counter
     
-    letterStock.forEach((letter, index) => {
-        const tile = $('<div>')
-            .addClass('letter-tile')
-            .text(letter)
-            .attr('data-letter', letter)
-            .attr('data-index', index)
-            .css('background-color', getLetterColor(letter));
-        
+    letters.forEach((letter) => {
+        const { tile, tileId } = createLetterTile(letter);
+        letterStock.push(tileId);
         letterStockContainer.append(tile);
     });
     
-    // Make letter tiles draggable (touch-optimized)
+    // Make letter stock sortable to maintain order and 2-row grid
+    letterStockContainer.sortable({
+        items: '.letter-tile',
+        tolerance: 'pointer',
+        cursor: 'move',
+        distance: 5, // Small distance to prevent accidental sorting
+        delay: 50, // Small delay to distinguish from drag-to-board
+        containment: 'parent',
+        grid: [48, 48], // Snap to grid (48px tiles)
+        forcePlaceholderSize: true,
+        placeholder: 'letter-tile-placeholder',
+        start: function(event, ui) {
+            // When starting to sort, temporarily disable draggable to prevent conflicts
+            ui.item.draggable('disable');
+        },
+        stop: function(event, ui) {
+            // Re-enable draggable after sorting
+            ui.item.draggable('enable');
+        },
+        update: function(event, ui) {
+            // Update letterStock array to match new order (using tile IDs)
+            letterStock = [];
+            letterStockContainer.find('.letter-tile').each(function() {
+                const tileId = $(this).attr('data-tile-id');
+                if (tileId) {
+                    letterStock.push(tileId);
+                }
+            });
+        }
+    });
+    
+    // Make letter stock droppable (so letters can be dragged back from board)
+    letterStockContainer.droppable({
+        accept: '.letter-tile',
+        tolerance: 'pointer',
+        drop: function(event, ui) {
+            handleDropToStock($(this), ui.draggable);
+        }
+    });
+    
+    // Make letter tiles draggable (touch-optimized) - for dragging to board
     makeDraggable($('.letter-tile'));
 }
 
@@ -273,16 +402,155 @@ function getLetterColor(letter) {
     return '#333333'; // Same color for all letters
 }
 
+// Create a letter tile with unique ID
+function createLetterTile(letter) {
+    const tileId = `tile-${tileIdCounter++}`;
+    const tile = $('<div>')
+        .addClass('letter-tile')
+        .text(letter)
+        .attr('data-letter', letter)
+        .attr('data-tile-id', tileId)
+        .css('background-color', getLetterColor(letter));
+    
+    // Store tile data
+    tileData[tileId] = {
+        letter: letter,
+        element: tile
+    };
+    
+    return { tile, tileId };
+}
+
+// Rebuild letter stock display to maintain 2-row grid
+function rebuildLetterStock() {
+    const letterStockContainer = $('#letterStock');
+    letterStockContainer.empty();
+    
+    // Recreate all tiles in order from letterStock array (which contains tile IDs)
+    letterStock.forEach((tileId) => {
+        const tileInfo = tileData[tileId];
+        if (tileInfo) {
+            // Recreate the tile element
+            const tile = $('<div>')
+                .addClass('letter-tile')
+                .text(tileInfo.letter)
+                .attr('data-letter', tileInfo.letter)
+                .attr('data-tile-id', tileId)
+                .css('background-color', getLetterColor(tileInfo.letter));
+            
+            // Update tile data
+            tileData[tileId].element = tile;
+            letterStockContainer.append(tile);
+        }
+    });
+    
+    // Re-initialize sortable to maintain order and 2-row grid
+    letterStockContainer.sortable({
+        items: '.letter-tile',
+        tolerance: 'pointer',
+        cursor: 'move',
+        distance: 5,
+        delay: 50,
+        containment: 'parent',
+        grid: [48, 48], // Snap to grid (48px tiles)
+        forcePlaceholderSize: true,
+        placeholder: 'letter-tile-placeholder',
+        start: function(event, ui) {
+            // When starting to sort, temporarily disable draggable to prevent conflicts
+            ui.item.draggable('disable');
+        },
+        stop: function(event, ui) {
+            // Re-enable draggable after sorting
+            ui.item.draggable('enable');
+        },
+        update: function(event, ui) {
+            // Update letterStock array to match new order (using tile IDs)
+            letterStock = [];
+            letterStockContainer.find('.letter-tile').each(function() {
+                const tileId = $(this).attr('data-tile-id');
+                if (tileId) {
+                    letterStock.push(tileId);
+                }
+            });
+        }
+    });
+    
+    // Re-initialize droppable on stock container
+    letterStockContainer.droppable({
+        accept: '.letter-tile',
+        tolerance: 'pointer',
+        drop: function(event, ui) {
+            handleDropToStock($(this), ui.draggable);
+        }
+    });
+    
+    // Make all letter tiles draggable again (for dragging to board)
+    makeDraggable($('.letter-tile'));
+}
+
+// Handle drop to letter stock
+function handleDropToStock(stockContainer, draggable) {
+    const tileId = draggable.attr('data-tile-id');
+    
+    if (!tileId || !tileData[tileId]) {
+        return; // Invalid tile
+    }
+    
+    // Check if tile is already in stock DOM (shouldn't happen, but safety check)
+    if (draggable.parent().hasClass('letter-stock')) {
+        return; // Already in stock
+    }
+    
+    // Remove from board if it was on the board
+    const oldRow = parseInt(draggable.attr('data-row'));
+    const oldCol = parseInt(draggable.attr('data-col'));
+    if (oldRow !== undefined && oldCol !== undefined) {
+        board[oldRow][oldCol] = null;
+        draggable.removeAttr('data-row').removeAttr('data-col');
+    }
+    
+    // Remove the dragged tile from DOM before rebuilding to prevent duplicates
+    draggable.detach();
+    
+    // Check if tile ID is already in stock array - if not, add it
+    // This prevents duplicates in the array
+    const tileIndex = letterStock.indexOf(tileId);
+    if (tileIndex === -1) {
+        letterStock.push(tileId);
+    }
+    // If tile already exists in array, don't add it again (prevents duplicates)
+    
+    // Rebuild the entire stock to maintain proper 2-row grid
+    // This will recreate all tiles from the letterStock array
+    rebuildLetterStock();
+}
+
 // Handle drop event
 function handleDrop(cell, draggable) {
+    const tileId = draggable.attr('data-tile-id');
     const letter = draggable.attr('data-letter');
+    
+    if (!tileId || !tileData[tileId]) {
+        return; // Invalid tile
+    }
+    
     const row = parseInt(cell.attr('data-row'));
     const col = parseInt(cell.attr('data-col'));
+    
+    // Check if dropping on the same cell (prevent duplication)
+    const draggableRow = parseInt(draggable.attr('data-row'));
+    const draggableCol = parseInt(draggable.attr('data-col'));
+    if (draggableRow !== undefined && draggableCol !== undefined && 
+        draggableRow === row && draggableCol === col) {
+        // Dropping on the same cell - do nothing
+        return;
+    }
     
     // Check if cell already has a letter
     const existingTile = cell.find('.letter-tile');
     if (existingTile.length > 0) {
         // Swap letters
+        const existingTileId = existingTile.attr('data-tile-id');
         const existingLetter = existingTile.attr('data-letter');
         
         // Remove existing tile from board
@@ -293,8 +561,8 @@ function handleDrop(cell, draggable) {
         const isFromStock = draggable.parent().hasClass('letter-stock');
         
         if (isFromStock) {
-            // Remove from stock array
-            const stockIndex = letterStock.indexOf(letter);
+            // Remove from stock array (using tile ID)
+            const stockIndex = letterStock.indexOf(tileId);
             if (stockIndex > -1) {
                 letterStock.splice(stockIndex, 1);
             }
@@ -320,22 +588,32 @@ function handleDrop(cell, draggable) {
             });
             draggable.attr('data-row', row).attr('data-col', col);
             cell.append(draggable);
-            board[row][col] = letter;
+            board[row][col] = tileId; // Store tile ID in board
             
             // Make tile draggable for repositioning
             makeDraggable(draggable);
             
             // Place existing letter back in stock (maintain position)
-            const existingTile = $('<div>')
-                .addClass('letter-tile')
-                .text(existingLetter)
-                .attr('data-letter', existingLetter)
-                .css('background-color', getLetterColor(existingLetter));
-            placeholder.before(existingTile);
-            placeholder.remove();
-            
-            // Make existing tile draggable
-            makeDraggable(existingTile);
+            // Use existing tile's ID if it exists, otherwise create new one
+            if (existingTileId && tileData[existingTileId]) {
+                const existingTileElement = $('<div>')
+                    .addClass('letter-tile')
+                    .text(existingLetter)
+                    .attr('data-letter', existingLetter)
+                    .attr('data-tile-id', existingTileId)
+                    .css('background-color', getLetterColor(existingLetter));
+                tileData[existingTileId].element = existingTileElement;
+                placeholder.before(existingTileElement);
+                placeholder.remove();
+                
+                // Add back to stock array if not already there
+                if (letterStock.indexOf(existingTileId) === -1) {
+                    letterStock.push(existingTileId);
+                }
+                
+                // Make existing tile draggable
+                makeDraggable(existingTileElement);
+            }
         } else {
             // Moving from board to board - swap
             const oldRow = parseInt(draggable.attr('data-row'));
@@ -354,20 +632,24 @@ function handleDrop(cell, draggable) {
             });
             draggable.attr('data-row', row).attr('data-col', col);
             cell.append(draggable);
-            board[row][col] = letter;
+            board[row][col] = tileId; // Store tile ID in board
             
             // Place existing letter in old cell
             const oldCell = $(`.grid-cell[data-row="${oldRow}"][data-col="${oldCol}"]`);
-            const oldTile = $('<div>')
-                .addClass('letter-tile')
-                .text(existingLetter)
-                .attr('data-letter', existingLetter)
-                .attr('data-row', oldRow)
-                .attr('data-col', oldCol)
-                .css('background-color', getLetterColor(existingLetter));
-            oldCell.append(oldTile);
-            board[oldRow][oldCol] = existingLetter;
-            makeDraggable(oldTile);
+            if (existingTileId && tileData[existingTileId]) {
+                const oldTile = $('<div>')
+                    .addClass('letter-tile')
+                    .text(existingLetter)
+                    .attr('data-letter', existingLetter)
+                    .attr('data-tile-id', existingTileId)
+                    .attr('data-row', oldRow)
+                    .attr('data-col', oldCol)
+                    .css('background-color', getLetterColor(existingLetter));
+                tileData[existingTileId].element = oldTile;
+                oldCell.append(oldTile);
+                board[oldRow][oldCol] = existingTileId; // Store tile ID
+                makeDraggable(oldTile);
+            }
         }
         
         return;
@@ -377,8 +659,8 @@ function handleDrop(cell, draggable) {
     const isFromStock = draggable.parent().hasClass('letter-stock');
     
     if (isFromStock) {
-        // Remove from stock array
-        const stockIndex = letterStock.indexOf(letter);
+        // Remove from stock array (using tile ID)
+        const stockIndex = letterStock.indexOf(tileId);
         if (stockIndex > -1) {
             letterStock.splice(stockIndex, 1);
         }
@@ -405,7 +687,7 @@ function handleDrop(cell, draggable) {
         
         draggable.attr('data-row', row).attr('data-col', col);
         cell.append(draggable);
-        board[row][col] = letter;
+        board[row][col] = tileId; // Store tile ID in board
         
         // Make tile draggable for repositioning
         makeDraggable(draggable);
@@ -427,7 +709,7 @@ function handleDrop(cell, draggable) {
         
         draggable.attr('data-row', row).attr('data-col', col);
         cell.append(draggable);
-        board[row][col] = letter;
+        board[row][col] = tileId; // Store tile ID in board
     }
 }
 
@@ -459,8 +741,9 @@ function extractWords() {
     for (let row = 0; row < 7; row++) {
         let currentWord = '';
         for (let col = 7; col >= 0; col--) {
-            if (board[row][col]) {
-                currentWord += board[row][col];
+            const tileId = board[row][col];
+            if (tileId && tileData[tileId]) {
+                currentWord += tileData[tileId].letter;
             } else {
                 if (currentWord.length >= 2) {
                     // Reverse for dictionary lookup (Hebrew RTL)
@@ -484,8 +767,9 @@ function extractWords() {
     for (let col = 0; col < 7; col++) {
         let currentWord = '';
         for (let row = 0; row < 7; row++) {
-            if (board[row][col]) {
-                currentWord += board[row][col];
+            const tileId = board[row][col];
+            if (tileId && tileData[tileId]) {
+                currentWord += tileData[tileId].letter;
             } else {
                 if (currentWord.length >= 2) {
                     // Convert final letter to sofit form
