@@ -1,3 +1,9 @@
+// Main game logic for multiplayer infinite grid crossword game
+import { onAuthStateChange, signOutUser, showLoginScreen, getCurrentUser } from './auth.js';
+import { showGameListScreen, loadGames } from './gameList.js';
+import { createGameAndInvite, checkPendingInvitations, acceptInvitation } from './invitations.js';
+import { subscribeToGame, unsubscribeFromGame, updateBoard, finishTurn, getCurrentGameId, updateGameState } from './gameState.js';
+
 // Letter distribution percentages
 const letterDistribution = {
     "י": 15.4836,
@@ -25,40 +31,24 @@ const letterDistribution = {
 };
 
 // Game state
-let letters = []; // Will be generated based on date
-let board = Array(7).fill(null).map(() => Array(7).fill(null));
-let letterStock = []; // Array of tile IDs
-let scores = [];
 let dictionary = new Set();
-let tileIdCounter = 0; // Counter for unique tile IDs
-let tileData = {}; // Map of tileId -> {letter, element}
-let gameTimer = null; // Timer interval
-let gameStartTime = null; // When game started
-let timeRemaining = 60; // 60 seconds timer
-let gameStarted = false; // Whether game has started
-let gameState = null; // Saved game state
+let board = Array(10).fill(null).map(() => Array(10).fill(null)); // Fixed 10x10 board
+let boardAtTurnStart = null; // Board state at the start of current turn
+let tempTiles = new Set(); // Set of coordinates (row,col) that are TEMP tiles
+let currentPlayerLetters = []; // Current player's letters
+let tileIdCounter = 0;
+let tileData = {}; // Map of tileId -> {letter, x, y, element}
+let currentGame = null;
+let isMyTurn = false;
+let cellSize = 48; // Size of each grid cell in pixels
 
-// Seeded random number generator
-function seededRandom(seed) {
-    let value = seed;
-    return function() {
-        value = (value * 9301 + 49297) % 233280;
-        return value / 233280;
-    };
+// Random number generator
+function random() {
+    return Math.random();
 }
 
-// Generate letters based on date and distribution
-function generateLettersForDate() {
-    const today = new Date();
-    const day = today.getDate();
-    const month = today.getMonth() + 1; // getMonth() returns 0-11
-    const year = today.getFullYear();
-    
-    // Create seed from date
-    const seed = day * 10000 + month * 100 + (year % 100);
-    const random = seededRandom(seed);
-    
-    // Build cumulative distribution
+// Generate random letters based on distribution
+function generateRandomLetters(count) {
     const letters = Object.keys(letterDistribution);
     const cumulative = [];
     let sum = 0;
@@ -74,12 +64,11 @@ function generateLettersForDate() {
         item.threshold = item.threshold / total;
     });
     
-    // Select 12 letters
+    // Select letters
     const selectedLetters = [];
-    for (let i = 0; i < 12; i++) {
+    for (let i = 0; i < count; i++) {
         const rand = random();
-        // Find which letter this random value corresponds to
-        let selected = cumulative[cumulative.length - 1].letter; // Default to last letter
+        let selected = cumulative[cumulative.length - 1].letter;
         for (let j = 0; j < cumulative.length; j++) {
             if (rand <= cumulative[j].threshold) {
                 selected = cumulative[j].letter;
@@ -92,928 +81,303 @@ function generateLettersForDate() {
     return selectedLetters;
 }
 
-// Get today's date string (YYYY-MM-DD)
-function getTodayDateString() {
-    const today = new Date();
-    const year = today.getFullYear();
-    const month = String(today.getMonth() + 1).padStart(2, '0');
-    const day = String(today.getDate()).padStart(2, '0');
-    return `${year}-${month}-${day}`;
-}
-
-// Save game state to localStorage
-function saveGameState() {
-    if (!gameStarted) return; // Don't save if game hasn't started
-    
-    const today = getTodayDateString();
-    
-    // Convert tileData to serializable format (remove jQuery elements)
-    const serializableTileData = {};
-    Object.keys(tileData).forEach(tileId => {
-        serializableTileData[tileId] = {
-            letter: tileData[tileId].letter
-            // Don't save element reference
-        };
-    });
-    
-    // Calculate time remaining based on elapsed time
-    let currentTimeRemaining = timeRemaining;
-    if (gameStartTime) {
-        const elapsed = Math.floor((Date.now() - gameStartTime) / 1000);
-        currentTimeRemaining = Math.max(0, 60 - elapsed);
-    }
-    
-    const state = {
-        date: today,
-        board: board,
-        letterStock: letterStock,
-        tileData: serializableTileData,
-        tileIdCounter: tileIdCounter,
-        timeRemaining: currentTimeRemaining,
-        gameStarted: gameStarted,
-        gameStartTime: gameStartTime
-    };
-    
-    try {
-        localStorage.setItem('hebrewCrosswordGameState', JSON.stringify(state));
-    } catch (e) {
-        console.error('Error saving game state:', e);
-    }
-}
-
-// Load game state from localStorage
-function loadGameState() {
-    const savedState = localStorage.getItem('hebrewCrosswordGameState');
-    if (!savedState) return null;
-    
-    try {
-        const state = JSON.parse(savedState);
-        const today = getTodayDateString();
-        
-        // Check if saved state is for today
-        if (state.date === today) {
-            return state;
-        }
-        // If different day, clear old state
-        localStorage.removeItem('hebrewCrosswordGameState');
-        return null;
-    } catch (e) {
-        console.error('Error loading game state:', e);
-        return null;
-    }
-}
-
-// Show welcome dialog
-function showWelcomeDialog() {
-    const dialogHtml = `
-        <div class="welcome-dialog">
-            <h2>ברוכים הבאים למשחק התשבץ העברי!</h2>
-            <div class="welcome-content">
-                <p><strong>איך לשחק:</strong></p>
-                <ul>
-                    <li>גררו אותיות מהבנק ללוח המשחק</li>
-                    <li>צרו מילים אנכיות ואופקיות</li>
-                    <li>מילים אופקיות נקראות מימין לשמאל</li>
-                    <li>יש לכם 60 שניות ליצור כמה שיותר מילים</li>
-                    <li>לחצו על "סיימתי" כשסיימתם</li>
-                </ul>
-                <p><strong>ניקוד:</strong></p>
-                <ul>
-                    <li>2 אותיות = 2 נקודות</li>
-                    <li>3 אותיות = 4 נקודות</li>
-                    <li>4 אותיות = 6 נקודות</li>
-                    <li>וכך הלאה...</li>
-                </ul>
-            </div>
-            <button class="start-game-btn">התחל משחק</button>
-        </div>
-    `;
-    
-    const overlay = $('<div>').addClass('dialog-overlay');
-    const dialog = $(dialogHtml);
-    overlay.append(dialog);
-    $('body').append(overlay);
-    
-    $('.start-game-btn').on('click', function() {
-        overlay.remove();
-        startGame();
-    });
-}
-
-// Start the game with animation
-function startGame() {
-    gameStarted = true;
-    gameStartTime = Date.now();
-    timeRemaining = 60;
-    
-    // Hide welcome elements, show game elements
-    $('#finishBtn').show();
-    $('#timerDisplay').show();
-    $('#timerProgress').show();
-    
-    // Animate letters flying in
-    animateLettersFlyIn();
-    
-    // Start timer
-    startTimer();
-    
-    // Save initial state
-    saveGameState();
-}
-
-// Animate letters flying into the bank
-function animateLettersFlyIn() {
-    const letterStockContainer = $('#letterStock');
-    letterStockContainer.empty();
-    
-    letters.forEach((letter, index) => {
-        setTimeout(() => {
-            const { tile, tileId } = createLetterTile(letter);
-            letterStock.push(tileId);
-            
-            // Start position (off-screen)
-            tile.css({
-                position: 'absolute',
-                left: '-100px',
-                top: '50%',
-                opacity: 0,
-                transform: 'scale(0.5) rotate(-180deg)'
-            });
-            
-            letterStockContainer.append(tile);
-            
-            // Animate to final position
-            setTimeout(() => {
-                tile.css({
-                    position: 'relative',
-                    left: 'auto',
-                    top: 'auto',
-                    opacity: 1,
-                    transform: 'scale(1) rotate(0deg)',
-                    transition: 'all 0.5s ease-out'
-                });
-            }, 10);
-            
-            // After animation, remove transition for normal behavior
-            setTimeout(() => {
-                tile.css('transition', '');
-            }, 510);
-        }, index * 100); // Stagger animations by 100ms
-    });
-    
-    // After all letters are animated, initialize stock functionality
-    setTimeout(() => {
-        initializeLetterStockFunctionality();
-        saveGameState(); // Save state after letters are loaded
-    }, letters.length * 100 + 600);
-}
-
-// Initialize letter stock functionality (sortable, droppable, draggable)
-function initializeLetterStockFunctionality() {
-    const letterStockContainer = $('#letterStock');
-    
-    // Make letter stock sortable to maintain order and 2-row grid
-    letterStockContainer.sortable({
-        items: '.letter-tile',
-        tolerance: 'pointer',
-        cursor: 'move',
-        distance: 5,
-        delay: 50,
-        containment: 'parent',
-        grid: [48, 48],
-        forcePlaceholderSize: true,
-        placeholder: 'letter-tile-placeholder',
-        start: function(event, ui) {
-            ui.item.draggable('disable');
-        },
-        stop: function(event, ui) {
-            ui.item.draggable('enable');
-        },
-        update: function(event, ui) {
-            letterStock = [];
-            letterStockContainer.find('.letter-tile').each(function() {
-                const tileId = $(this).attr('data-tile-id');
-                if (tileId) {
-                    letterStock.push(tileId);
-                }
-            });
-            saveGameState();
-        }
-    });
-    
-    // Make letter stock droppable
-    letterStockContainer.droppable({
-        accept: '.letter-tile',
-        tolerance: 'pointer',
-        drop: function(event, ui) {
-            handleDropToStock($(this), ui.draggable);
-        }
-    });
-    
-    // Make letter tiles draggable
-    makeDraggable($('.letter-tile'));
-}
-
-// Start the 60 second timer
-function startTimer() {
-    updateTimerDisplay();
-    updateProgressBar();
-    
-    gameTimer = setInterval(() => {
-        timeRemaining--;
-        updateTimerDisplay();
-        updateProgressBar();
-        
-        if (timeRemaining <= 0) {
-            clearInterval(gameTimer);
-            // Auto-finish when time runs out
-            $('#finishBtn').click();
-        }
-        
-        saveGameState();
-    }, 1000);
-}
-
-// Update timer display
-function updateTimerDisplay() {
-    const minutes = Math.floor(timeRemaining / 60);
-    const seconds = timeRemaining % 60;
-    const timeString = `${minutes}:${String(seconds).padStart(2, '0')}`;
-    $('#timerDisplay').text(timeString);
-}
-
-// Update progress bar
-function updateProgressBar() {
-    const progress = ((60 - timeRemaining) / 60) * 100;
-    $('#timerProgressBar').css('width', progress + '%');
-}
-
-// Initialize game
-$(document).ready(function() {
-    // Generate letters based on today's date
-    letters = generateLettersForDate();
-    
-    // Load saved game state
-    gameState = loadGameState();
-    
-    loadDictionary();
-    initializeBoard();
-    
-    // Check if we have saved state for today
-    if (gameState && gameState.gameStarted) {
-        // Restore game state
-        board = gameState.board;
-        letterStock = gameState.letterStock;
-        tileIdCounter = gameState.tileIdCounter;
-        timeRemaining = gameState.timeRemaining;
-        gameStarted = gameState.gameStarted;
-        gameStartTime = gameState.gameStartTime;
-        
-        // Restore tileData (without element references - will be set when restoring visuals)
-        tileData = {};
-        Object.keys(gameState.tileData).forEach(tileId => {
-            tileData[tileId] = {
-                letter: gameState.tileData[tileId].letter,
-                element: null // Will be set when restoring visuals
-            };
-        });
-        
-        // Restore board visually
-        restoreBoard();
-        
-        // Restore letter stock
-        restoreLetterStock();
-        
-        // Show game UI
-        $('#finishBtn').show();
-        $('#timerDisplay').show();
-        $('#timerProgress').show();
-        
-        // Continue timer if game was in progress
-        if (timeRemaining > 0) {
-            // Calculate elapsed time and adjust timer
-            const elapsed = Math.floor((Date.now() - gameStartTime) / 1000);
-            timeRemaining = Math.max(0, 60 - elapsed);
-            updateTimerDisplay();
-            updateProgressBar();
-            
-            if (timeRemaining > 0) {
-                startTimer();
-            } else {
-                // Time ran out - auto finish
-                $('#finishBtn').click();
-            }
-        } else {
-            // Game was already finished
-            $('#finishBtn').hide();
-            $('#timerDisplay').hide();
-            $('#timerProgress').hide();
-        }
-    } else {
-        // New game - show welcome dialog
-        $('#finishBtn').hide();
-        $('#timerDisplay').hide();
-        $('#timerProgress').hide();
-        showWelcomeDialog();
-    }
-});
-
-// Load dictionary from file
+// Load dictionary
 async function loadDictionary() {
     try {
-        const response = await fetch('public/dictionary.txt');
+        // In Vite, files from public/ are copied to root of dist/, so use '/dictionary.txt'
+        const response = await fetch('/dictionary.txt');
+        if (!response.ok) {
+            throw new Error(`Failed to load dictionary: ${response.status} ${response.statusText}`);
+        }
         const text = await response.text();
+        console.log(`Dictionary file loaded, length: ${text.length} characters`);
         const words = text.split('\n').map(word => word.trim()).filter(word => word.length > 0);
+        console.log(`Parsed ${words.length} words from dictionary file`);
         words.forEach(word => dictionary.add(word));
-        console.log(`Loaded ${dictionary.size} words from dictionary`);
+        console.log(`Loaded ${dictionary.size} unique words from dictionary`);
     } catch (error) {
         console.error('Error loading dictionary:', error);
     }
 }
 
-// Find the closest grid cell to the dragged element
-function findClosestCell(dragX, dragY) {
-    let closestCell = null;
-    let minDistance = Infinity;
-    
-    $('.grid-cell').each(function() {
-        const $cell = $(this);
-        const cellOffset = $cell.offset();
-        const cellWidth = $cell.outerWidth();
-        const cellHeight = $cell.outerHeight();
-        
-        // Calculate center of cell
-        const cellCenterX = cellOffset.left + cellWidth / 2;
-        const cellCenterY = cellOffset.top + cellHeight / 2;
-        
-        // Calculate distance from drag position to cell center
-        const distance = Math.sqrt(
-            Math.pow(dragX - cellCenterX, 2) + 
-            Math.pow(dragY - cellCenterY, 2)
-        );
-        
-        // Check if drag position is within cell bounds (with some tolerance)
-        const tolerance = Math.max(cellWidth, cellHeight) * 0.8;
-        if (distance < tolerance && distance < minDistance) {
-            minDistance = distance;
-            closestCell = $cell;
-        }
-    });
-    
-    return closestCell;
-}
-
-// Helper function to make elements draggable with touch support
-function makeDraggable($element) {
-    let closestCell = null;
-    
-    $element.draggable({
-        revert: 'invalid',
-        cursor: 'move',
-        distance: 10, // Require small movement to start drag (distinguish from sortable)
-        delay: 0, // No delay for touch
-        scroll: false, // Prevent page scrolling during drag
-        helper: function() {
-            return $(this);
-        },
-        start: function(event, ui) {
-            const $tile = $(this);
-            const isInStock = $tile.parent().hasClass('letter-stock');
-            
-            // Store if we started from stock
-            if (isInStock) {
-                $tile.data('was-in-stock', true);
-                $tile.parent().sortable('disable');
-            }
-            
-            // Prevent default touch behaviors
-            if (event.originalEvent && event.originalEvent.touches) {
-                event.originalEvent.preventDefault();
-            }
-            
-            if (isInStock) {
-                $tile.css('opacity', '0.5');
-            }
-            // Prevent body scroll during drag
-            $('body').css('overflow', 'hidden');
-            // Add visual feedback
-            $tile.addClass('dragging');
-            // Clear any existing highlights
-            $('.grid-cell').removeClass('ui-droppable-hover');
-            closestCell = null;
-        },
-        drag: function(event, ui) {
-            // Prevent default touch behaviors during drag
-            if (event.originalEvent && event.originalEvent.touches) {
-                event.originalEvent.preventDefault();
-            }
-            
-            const $tile = $(this);
-            const isInStock = $tile.parent().hasClass('letter-stock');
-            
-            // If dragging from stock and still within stock area, cancel draggable and let sortable handle it
-            if (isInStock) {
-                const $letterStock = $('#letterStock');
-                const stockOffset = $letterStock.offset();
-                const stockWidth = $letterStock.outerWidth();
-                const stockHeight = $letterStock.outerHeight();
-                
-                const pageX = event.pageX || (event.originalEvent.touches && event.originalEvent.touches[0].pageX);
-                const pageY = event.pageY || (event.originalEvent.touches && event.originalEvent.touches[0].pageY);
-                
-                const isOverStock = pageX >= stockOffset.left && 
-                                   pageX <= stockOffset.left + stockWidth &&
-                                   pageY >= stockOffset.top && 
-                                   pageY <= stockOffset.top + stockHeight;
-                
-                // If still over stock, this should be handled by sortable, not draggable
-                // But we'll let it continue and handle in stop
-            }
-            
-            // Calculate position of dragged element
-            const dragX = ui.position.left + ui.helper.outerWidth() / 2;
-            const dragY = ui.position.top + ui.helper.outerHeight() / 2;
-            
-            // Convert to page coordinates
-            const $helper = ui.helper;
-            const helperOffset = $helper.offset();
-            const pageX = helperOffset.left + $helper.outerWidth() / 2;
-            const pageY = helperOffset.top + $helper.outerHeight() / 2;
-            
-            // Check if over letter stock
-            const $letterStock = $('#letterStock');
-            const stockOffset = $letterStock.offset();
-            const stockWidth = $letterStock.outerWidth();
-            const stockHeight = $letterStock.outerHeight();
-            const isOverStock = pageX >= stockOffset.left && 
-                               pageX <= stockOffset.left + stockWidth &&
-                               pageY >= stockOffset.top && 
-                               pageY <= stockOffset.top + stockHeight;
-            
-            if (isOverStock) {
-                // Highlight stock instead of cells
-                if (closestCell) {
-                    closestCell.removeClass('ui-droppable-hover');
-                    closestCell = null;
-                }
-                $letterStock.addClass('ui-droppable-hover');
-            } else {
-                // Remove stock highlight
-                $letterStock.removeClass('ui-droppable-hover');
-                
-                // Find closest cell
-                const newClosestCell = findClosestCell(pageX, pageY);
-                
-                // Update highlight
-                if (newClosestCell !== closestCell) {
-                    // Remove highlight from previous cell
-                    if (closestCell) {
-                        closestCell.removeClass('ui-droppable-hover');
-                    }
-                    // Add highlight to new closest cell
-                    if (newClosestCell) {
-                        newClosestCell.addClass('ui-droppable-hover');
-                    }
-                    closestCell = newClosestCell;
-                }
-            }
-        },
-        stop: function(event, ui) {
-            const $tile = $(this);
-            const wasInStock = $tile.data('was-in-stock') || $tile.parent().hasClass('letter-stock');
-            const $letterStock = $('#letterStock');
-            
-            // Check if dropped back into stock
-            const stockOffset = $letterStock.offset();
-            const stockWidth = $letterStock.outerWidth();
-            const stockHeight = $letterStock.outerHeight();
-            const pageX = event.pageX || (event.originalEvent.touches && event.originalEvent.touches[0].pageX);
-            const pageY = event.pageY || (event.originalEvent.touches && event.originalEvent.touches[0].pageY);
-            const isOverStock = pageX >= stockOffset.left && 
-                               pageX <= stockOffset.left + stockWidth &&
-                               pageY >= stockOffset.top && 
-                               pageY <= stockOffset.top + stockHeight;
-            
-            // If was in stock and dropped back in stock, rebuild to ensure grid positioning
-            if (wasInStock && isOverStock && !$tile.parent().hasClass('grid-cell')) {
-                // Re-enable sortable
-                $letterStock.sortable('enable');
-                // Rebuild stock to ensure proper grid positioning
-                rebuildLetterStock();
-                // Clear drag data
-                $tile.removeData('was-in-stock');
-                $tile.removeData('drag-start-pos');
-                return;
-            }
-            
-            // Re-enable sortable if we were dragging from stock
-            if (wasInStock) {
-                $letterStock.sortable('enable');
-            }
-            
-            // Remove highlight from closest cell
-            if (closestCell) {
-                closestCell.removeClass('ui-droppable-hover');
-                closestCell = null;
-            }
-            // Clear all highlights
-            $('.grid-cell').removeClass('ui-droppable-hover');
-            $('#letterStock').removeClass('ui-droppable-hover');
-            // Restore body scroll
-            $('body').css('overflow', '');
-            // Remove visual feedback
-            $tile.removeClass('dragging');
-            // Clear drag data
-            $tile.removeData('was-in-stock');
-            $tile.removeData('drag-start-pos');
-            // If revert happened, restore opacity
-            if (wasInStock && $tile.parent().hasClass('letter-stock')) {
-                $tile.css('opacity', '1');
-            }
-        }
-    });
-}
-
-// Initialize 7x7 game board
+// Initialize fixed 10x10 board
 function initializeBoard() {
     const gameBoard = $('#gameBoard');
     gameBoard.empty();
     
-    for (let row = 0; row < 7; row++) {
-        for (let col = 0; col < 7; col++) {
+    // Create 10x10 grid
+    for (let row = 0; row < 10; row++) {
+        for (let col = 0; col < 10; col++) {
             const cell = $('<div>')
                 .addClass('grid-cell')
                 .attr('data-row', row)
                 .attr('data-col', col);
+            
+            // Add letter if exists
+            if (board[row][col]) {
+                // Check if this tile is TEMP (placed in current turn)
+                const coordKey = `${row},${col}`;
+                const isTemp = tempTiles.has(coordKey);
+                const tile = createTile(board[row][col], row, col, isTemp);
+                cell.append(tile);
+            }
+            
             gameBoard.append(cell);
         }
     }
     
-    // Make grid cells droppable (touch-optimized)
+    // Make cells droppable
     $('.grid-cell').droppable({
         accept: '.letter-tile',
         tolerance: 'pointer',
         drop: function(event, ui) {
             handleDrop($(this), ui.draggable);
-            saveGameState(); // Save state after drop
         }
     });
 }
 
-// Restore board from saved state
-function restoreBoard() {
-    for (let row = 0; row < 7; row++) {
-        for (let col = 0; col < 7; col++) {
-            const tileId = board[row][col];
-            if (tileId && tileData[tileId]) {
-                const tileInfo = tileData[tileId];
-                const cell = $(`.grid-cell[data-row="${row}"][data-col="${col}"]`);
-                const tile = $('<div>')
-                    .addClass('letter-tile')
-                    .text(tileInfo.letter)
-                    .attr('data-letter', tileInfo.letter)
-                    .attr('data-tile-id', tileId)
-                    .attr('data-row', row)
-                    .attr('data-col', col);
-                tileData[tileId].element = tile;
-                cell.append(tile);
-                makeDraggable(tile);
-            }
-        }
-    }
-}
-
-// Restore letter stock from saved state
-function restoreLetterStock() {
-    const letterStockContainer = $('#letterStock');
-    letterStockContainer.empty();
-    
-    letterStock.forEach((tileId) => {
-        const tileInfo = tileData[tileId];
-        if (tileInfo) {
-            const tile = $('<div>')
-                .addClass('letter-tile')
-                .text(tileInfo.letter)
-                .attr('data-letter', tileInfo.letter)
-                .attr('data-tile-id', tileId);
-            tileData[tileId].element = tile;
-            letterStockContainer.append(tile);
-        }
-    });
-    
-    initializeLetterStockFunctionality();
-}
-
-// Create a letter tile with unique ID
-function createLetterTile(letter) {
+// Create a tile
+function createTile(letter, row, col, isTemp = false) {
     const tileId = `tile-${tileIdCounter++}`;
     const tile = $('<div>')
         .addClass('letter-tile')
         .text(letter)
         .attr('data-letter', letter)
         .attr('data-tile-id', tileId)
+        .attr('data-row', row)
+        .attr('data-col', col);
     
-    // Store tile data
+    // Mark as TEMP if it's a new tile placed in current turn
+    if (isTemp) {
+        tile.attr('data-temp', 'true');
+    }
+    
     tileData[tileId] = {
-        letter: letter,
-        element: tile
+        letter,
+        row,
+        col,
+        element: tile,
+        isTemp
     };
     
-    return { tile, tileId };
+    // Only make draggable if it's TEMP or from stock
+    if (isTemp) {
+        makeDraggable(tile);
+    }
+    
+    return tile;
 }
 
-// Rebuild letter stock display to maintain 2-row grid
-function rebuildLetterStock() {
-    const letterStockContainer = $('#letterStock');
-    letterStockContainer.empty();
-    
-    // Recreate all tiles in order from letterStock array (which contains tile IDs)
-    letterStock.forEach((tileId) => {
-        const tileInfo = tileData[tileId];
-        if (tileInfo) {
-            // Recreate the tile element
-            const tile = $('<div>')
-                .addClass('letter-tile')
-                .text(tileInfo.letter)
-                .attr('data-letter', tileInfo.letter)
-                .attr('data-tile-id', tileId)
-            
-            // Update tile data
-            tileData[tileId].element = tile;
-            letterStockContainer.append(tile);
-        }
-    });
-    
-    // Re-initialize sortable to maintain order and 2-row grid
-    letterStockContainer.sortable({
-        items: '.letter-tile',
-        tolerance: 'pointer',
+// Make element draggable (only for TEMP tiles or stock tiles)
+function makeDraggable($element) {
+    $element.draggable({
+        revert: 'invalid',
         cursor: 'move',
-        distance: 5,
-        delay: 50,
-        containment: 'parent',
-        grid: [48, 48], // Snap to grid (48px tiles)
-        forcePlaceholderSize: true,
-        placeholder: 'letter-tile-placeholder',
-        start: function(event, ui) {
-            // When starting to sort, temporarily disable draggable to prevent conflicts
-            ui.item.draggable('disable');
+        distance: 10,
+        scroll: false,
+        start: function() {
+            // Only allow dragging if it's TEMP or from stock
+            const isTemp = $(this).attr('data-temp') === 'true';
+            const isFromStock = $(this).parent().hasClass('letter-stock');
+            
+            if (!isTemp && !isFromStock) {
+                return false; // Prevent dragging locked tiles
+            }
+            
+            $(this).css('opacity', '0.5');
+            $('body').css('overflow', 'hidden');
         },
-        stop: function(event, ui) {
-            // Re-enable draggable after sorting
-            ui.item.draggable('enable');
-        },
-        update: function(event, ui) {
-            // Update letterStock array to match new order (using tile IDs)
-            letterStock = [];
-            letterStockContainer.find('.letter-tile').each(function() {
-                const tileId = $(this).attr('data-tile-id');
-                if (tileId) {
-                    letterStock.push(tileId);
-                }
-            });
-            saveGameState(); // Save state after sorting
+        stop: function() {
+            $(this).css('opacity', '1');
+            $('body').css('overflow', '');
         }
     });
+}
+
+// Handle drop on board
+function handleDrop(cell, draggable) {
+    if (!isMyTurn) return;
     
-    // Re-initialize droppable on stock container
-    letterStockContainer.droppable({
+    const tileId = draggable.attr('data-tile-id');
+    const letter = draggable.attr('data-letter');
+    const row = parseInt(cell.attr('data-row'));
+    const col = parseInt(cell.attr('data-col'));
+    
+    // Check if cell already has a letter
+    if (board[row][col]) {
+        // Swap or return
+        return;
+    }
+    
+    // Check if from stock
+    const isFromStock = draggable.parent().hasClass('letter-stock');
+    
+    if (isFromStock) {
+        // Remove from stock
+        const index = currentPlayerLetters.indexOf(letter);
+        if (index > -1) {
+            currentPlayerLetters.splice(index, 1);
+        }
+        draggable.detach();
+        
+        // Place on board as TEMP tile (new tile in current turn)
+        board[row][col] = letter;
+        const coordKey = `${row},${col}`;
+        tempTiles.add(coordKey); // Mark as TEMP
+        const tile = createTile(letter, row, col, true); // true = isTemp
+        cell.append(tile);
+        
+        // Update tile data
+        if (tileId && tileData[tileId]) {
+            tileData[tileId].row = row;
+            tileData[tileId].col = col;
+            tileData[tileId].isTemp = true;
+        }
+        
+        // Don't save to Firestore here - only save at end of turn
+        updateLetterStock();
+    } else {
+        // Moving TEMP tile on board - only allow if it's TEMP
+        const isTemp = draggable.attr('data-temp') === 'true';
+        if (!isTemp) {
+            return; // Don't allow moving locked tiles
+        }
+        
+        const oldRow = parseInt(draggable.attr('data-row'));
+        const oldCol = parseInt(draggable.attr('data-col'));
+        
+        if (oldRow === row && oldCol === col) return; // Same cell
+        
+        // Remove from old position
+        board[oldRow][oldCol] = null;
+        const oldCoordKey = `${oldRow},${oldCol}`;
+        tempTiles.delete(oldCoordKey); // Remove from TEMP set
+        
+        draggable.detach();
+        
+        // Place on new position (keep TEMP status)
+        board[row][col] = letter;
+        const newCoordKey = `${row},${col}`;
+        tempTiles.add(newCoordKey); // Add to TEMP set
+        draggable.attr('data-row', row).attr('data-col', col);
+        // Ensure data-temp="true" attribute is preserved
+        if (!draggable.attr('data-temp')) {
+            draggable.attr('data-temp', 'true');
+        }
+        cell.append(draggable);
+        
+        if (tileId && tileData[tileId]) {
+            tileData[tileId].row = row;
+            tileData[tileId].col = col;
+            tileData[tileId].isTemp = true;
+        }
+        
+        // Don't save to Firestore here - only save at end of turn
+    }
+    
+    // Re-render board
+    renderBoard();
+}
+
+// Convert board array to Firestore map format
+function boardToMap(boardArray) {
+    const boardMap = {};
+    const size = boardArray.length;
+    for (let r = 0; r < size; r++) {
+        for (let c = 0; c < size; c++) {
+            if (boardArray[r] && boardArray[r][c]) {
+                boardMap[`${r},${c}`] = boardArray[r][c];
+            }
+        }
+    }
+    return boardMap;
+}
+
+// Save board state to Firestore
+async function saveBoardState() {
+    try {
+        const boardMap = boardToMap(board);
+        await updateBoard(boardMap);
+    } catch (error) {
+        console.error('Error saving board:', error);
+    }
+}
+
+// Update letter stock display
+function updateLetterStock() {
+    const stock = $('#letterStock');
+    stock.empty();
+    
+    // Use CSS Grid for 2 rows of 4 (or adjust based on count)
+    stock.css({
+        display: 'grid',
+        gridTemplateColumns: 'repeat(4, 1fr)',
+        gap: '10px',
+        maxWidth: '400px',
+        margin: '0 auto'
+    });
+    
+    currentPlayerLetters.forEach((letter, index) => {
+        const tile = $('<div>')
+            .addClass('letter-tile')
+            .text(letter)
+            .attr('data-letter', letter);
+            // CSS is handled by .letter-tile class in style.css
+        
+        makeDraggable(tile);
+        stock.append(tile);
+    });
+    
+    // Make stock droppable
+    stock.droppable({
         accept: '.letter-tile',
         tolerance: 'pointer',
         drop: function(event, ui) {
             handleDropToStock($(this), ui.draggable);
         }
     });
-    
-    // Make all letter tiles draggable again (for dragging to board)
-    makeDraggable($('.letter-tile'));
 }
 
-// Handle drop to letter stock
-function handleDropToStock(stockContainer, draggable) {
-    const tileId = draggable.attr('data-tile-id');
+// Handle drop to stock
+function handleDropToStock(stock, draggable) {
+    if (!isMyTurn) return;
     
-    if (!tileId || !tileData[tileId]) {
-        return; // Invalid tile
+    // Only allow returning TEMP tiles to stock
+    const isTemp = draggable.attr('data-temp') === 'true';
+    if (!isTemp) {
+        return; // Don't allow returning locked tiles
     }
     
-    // Check if tile is already in stock DOM (shouldn't happen, but safety check)
-    if (draggable.parent().hasClass('letter-stock')) {
-        return; // Already in stock
-    }
-    
-    // Remove from board if it was on the board
-    const oldRow = parseInt(draggable.attr('data-row'));
-    const oldCol = parseInt(draggable.attr('data-col'));
-    if (oldRow !== undefined && oldCol !== undefined) {
-        board[oldRow][oldCol] = null;
-        draggable.removeAttr('data-row').removeAttr('data-col');
-    }
-    
-    // Remove the dragged tile from DOM before rebuilding to prevent duplicates
-    draggable.detach();
-    
-    // Check if tile ID is already in stock array - if not, add it
-    // This prevents duplicates in the array
-    const tileIndex = letterStock.indexOf(tileId);
-    if (tileIndex === -1) {
-        letterStock.push(tileId);
-    }
-    // If tile already exists in array, don't add it again (prevents duplicates)
-    
-    // Rebuild the entire stock to maintain proper 2-row grid
-    // This will recreate all tiles from the letterStock array
-    rebuildLetterStock();
-    saveGameState(); // Save state after drop to stock
-}
-
-// Handle drop event
-function handleDrop(cell, draggable) {
-    const tileId = draggable.attr('data-tile-id');
     const letter = draggable.attr('data-letter');
+    const row = parseInt(draggable.attr('data-row'));
+    const col = parseInt(draggable.attr('data-col'));
     
-    if (!tileId || !tileData[tileId]) {
-        return; // Invalid tile
-    }
+    // Remove from board
+    board[row][col] = null;
+    const coordKey = `${row},${col}`;
+    tempTiles.delete(coordKey); // Remove from TEMP set
+    draggable.remove();
     
-    const row = parseInt(cell.attr('data-row'));
-    const col = parseInt(cell.attr('data-col'));
+    // Add back to letters
+    currentPlayerLetters.push(letter);
     
-    // Check if dropping on the same cell (prevent duplication)
-    const draggableRow = parseInt(draggable.attr('data-row'));
-    const draggableCol = parseInt(draggable.attr('data-col'));
-    if (draggableRow !== undefined && draggableCol !== undefined && 
-        draggableRow === row && draggableCol === col) {
-        // Dropping on the same cell - do nothing
-        return;
-    }
-    
-    // Check if cell already has a letter
-    const existingTile = cell.find('.letter-tile');
-    if (existingTile.length > 0) {
-        // Swap letters
-        const existingTileId = existingTile.attr('data-tile-id');
-        const existingLetter = existingTile.attr('data-letter');
-        
-        // Remove existing tile from board
-        existingTile.remove();
-        board[row][col] = null;
-        
-        // Check if draggable is from stock or board
-        const isFromStock = draggable.parent().hasClass('letter-stock');
-        
-        if (isFromStock) {
-            // Remove from stock array (using tile ID)
-            const stockIndex = letterStock.indexOf(tileId);
-            if (stockIndex > -1) {
-                letterStock.splice(stockIndex, 1);
-            }
-            
-            // Add placeholder to maintain position in stock
-            const placeholder = $('<div>')
-                .addClass('letter-placeholder')
-                .css({
-                    width: '100%',
-                    height: '100%',
-                    minHeight: '48px',
-                    visibility: 'hidden'
-                });
-            draggable.after(placeholder);
-            
-            // Move actual tile to board
-            draggable.detach().css({
-                position: 'relative',
-                top: 'auto',
-                left: 'auto',
-                margin: '0',
-                opacity: '1'
-            });
-            draggable.attr('data-row', row).attr('data-col', col);
-            cell.append(draggable);
-            board[row][col] = tileId; // Store tile ID in board
-            
-            // Make tile draggable for repositioning
-            makeDraggable(draggable);
-            
-            // Place existing letter back in stock (maintain position)
-            // Use existing tile's ID if it exists, otherwise create new one
-            if (existingTileId && tileData[existingTileId]) {
-                const existingTileElement = $('<div>')
-                    .addClass('letter-tile')
-                    .text(existingLetter)
-                    .attr('data-letter', existingLetter)
-                    .attr('data-tile-id', existingTileId)
-                tileData[existingTileId].element = existingTileElement;
-                placeholder.before(existingTileElement);
-                placeholder.remove();
-                
-                // Add back to stock array if not already there
-                if (letterStock.indexOf(existingTileId) === -1) {
-                    letterStock.push(existingTileId);
-                }
-                
-                // Make existing tile draggable
-                makeDraggable(existingTileElement);
-            }
-        } else {
-            // Moving from board to board - swap
-            const oldRow = parseInt(draggable.attr('data-row'));
-            const oldCol = parseInt(draggable.attr('data-col'));
-            
-            if (oldRow !== undefined && oldCol !== undefined) {
-                board[oldRow][oldCol] = null;
-            }
-            
-            // Move draggable to new cell
-            draggable.detach().css({
-                position: 'relative',
-                top: 'auto',
-                left: 'auto',
-                margin: '0'
-            });
-            draggable.attr('data-row', row).attr('data-col', col);
-            cell.append(draggable);
-            board[row][col] = tileId; // Store tile ID in board
-            
-            // Place existing letter in old cell
-            const oldCell = $(`.grid-cell[data-row="${oldRow}"][data-col="${oldCol}"]`);
-            if (existingTileId && tileData[existingTileId]) {
-                const oldTile = $('<div>')
-                    .addClass('letter-tile')
-                    .text(existingLetter)
-                    .attr('data-letter', existingLetter)
-                    .attr('data-tile-id', existingTileId)
-                    .attr('data-row', oldRow)
-                    .attr('data-col', oldCol)
-                tileData[existingTileId].element = oldTile;
-                oldCell.append(oldTile);
-                board[oldRow][oldCol] = existingTileId; // Store tile ID
-                makeDraggable(oldTile);
-            }
-        }
-        
-        return;
-    }
-    
-    // Check if letter is from stock
-    const isFromStock = draggable.parent().hasClass('letter-stock');
-    
-    if (isFromStock) {
-        // Remove from stock array (using tile ID)
-        const stockIndex = letterStock.indexOf(tileId);
-        if (stockIndex > -1) {
-            letterStock.splice(stockIndex, 1);
-        }
-        
-        // Add placeholder to maintain position in stock
-        const placeholder = $('<div>')
-            .addClass('letter-placeholder')
-                .css({
-                    width: '100%',
-                    height: '100%',
-                    minHeight: '48px',
-                    visibility: 'hidden'
-                });
-        draggable.after(placeholder);
-        
-        // Move actual tile (not clone) to board
-        draggable.detach().css({
-            position: 'relative',
-            top: 'auto',
-            left: 'auto',
-            margin: '0',
-            opacity: '1'
-        });
-        
-        draggable.attr('data-row', row).attr('data-col', col);
-        cell.append(draggable);
-        board[row][col] = tileId; // Store tile ID in board
-        
-        // Make tile draggable for repositioning
-        makeDraggable(draggable);
-    } else {
-        // Moving from board to board
-        const oldRow = parseInt(draggable.attr('data-row'));
-        const oldCol = parseInt(draggable.attr('data-col'));
-        
-        if (oldRow !== undefined && oldCol !== undefined) {
-            board[oldRow][oldCol] = null;
-        }
-        
-        draggable.detach().css({
-            position: 'relative',
-            top: 'auto',
-            left: 'auto',
-            margin: '0'
-        });
-        
-        draggable.attr('data-row', row).attr('data-col', col);
-        cell.append(draggable);
-        board[row][col] = tileId; // Store tile ID in board
-    }
+    // Don't save to Firestore here - only save at end of turn
+    updateLetterStock();
+    renderBoard();
 }
 
-// Convert final letters to their sofit forms
+// Save board state at the start of current turn
+function saveBoardAtTurnStart() {
+    // Deep copy the board array
+    boardAtTurnStart = board.map(row => row ? [...row] : null);
+}
+
+// Render board (recreate grid)
+function renderBoard() {
+    initializeBoard();
+}
+
+// Convert final letters to sofit forms
 function convertFinalLetter(word) {
     if (word.length === 0) return word;
     
@@ -1033,46 +397,41 @@ function convertFinalLetter(word) {
     return word;
 }
 
-// Extract all words from board
-function extractWords() {
+// Extract words from a board array
+function extractWordsFromBoard(boardArray) {
     const words = [];
     
-    // Extract horizontal words (read right to left for Hebrew)
-    for (let row = 0; row < 7; row++) {
+    // Extract horizontal words (right to left for Hebrew)
+    for (let row = 0; row < 10; row++) {
         let currentWord = '';
-        for (let col = 7; col >= 0; col--) {
-            const tileId = board[row][col];
-            if (tileId && tileData[tileId]) {
-                currentWord += tileData[tileId].letter;
+        for (let col = 9; col >= 0; col--) {
+            if (boardArray[row] && boardArray[row][col]) {
+                currentWord += boardArray[row][col];
             } else {
                 if (currentWord.length >= 2) {
                     // Reverse for dictionary lookup (Hebrew RTL)
-                    let word = currentWord.split('').reverse().join('');
-                    // Convert final letter to sofit form
-                    word = convertFinalLetter(word);
-                    words.push(word);
+                    let reversedWord = currentWord.split('').reverse().join('');
+                    reversedWord = convertFinalLetter(reversedWord);
+                    words.push(reversedWord);
                 }
                 currentWord = '';
             }
         }
         if (currentWord.length >= 2) {
-            let word = currentWord.split('').reverse().join('');
-            // Convert final letter to sofit form
-            word = convertFinalLetter(word);
-            words.push(word);
+            let reversedWord = currentWord.split('').reverse().join('');
+            reversedWord = convertFinalLetter(reversedWord);
+            words.push(reversedWord);
         }
     }
     
     // Extract vertical words (top to bottom)
-    for (let col = 0; col < 7; col++) {
+    for (let col = 0; col < 10; col++) {
         let currentWord = '';
-        for (let row = 0; row < 7; row++) {
-            const tileId = board[row][col];
-            if (tileId && tileData[tileId]) {
-                currentWord += tileData[tileId].letter;
+        for (let row = 0; row < 10; row++) {
+            if (boardArray[row] && boardArray[row][col]) {
+                currentWord += boardArray[row][col];
             } else {
                 if (currentWord.length >= 2) {
-                    // Convert final letter to sofit form
                     let word = convertFinalLetter(currentWord);
                     words.push(word);
                 }
@@ -1080,7 +439,6 @@ function extractWords() {
             }
         }
         if (currentWord.length >= 2) {
-            // Convert final letter to sofit form
             let word = convertFinalLetter(currentWord);
             words.push(word);
         }
@@ -1089,78 +447,182 @@ function extractWords() {
     return words;
 }
 
-// Calculate score for a word
+// Extract words from current board
+function extractWords() {
+    return extractWordsFromBoard(board);
+}
+
+// Calculate score
 function calculateScore(wordLength) {
     if (wordLength < 2) return 0;
     return (wordLength - 1) * 2;
 }
 
-// Validate words and calculate score
+// Validate and score only new words (not present at turn start)
 function validateAndScore() {
-    const words = extractWords();
-    scores = [];
+    // Get words from current board
+    const currentWords = extractWordsFromBoard(board);
+    
+    // Get words from board at turn start (if exists)
+    const oldWords = boardAtTurnStart ? extractWordsFromBoard(boardAtTurnStart) : [];
+    
+    // Create sets for comparison
+    const oldWordsSet = new Set(oldWords);
+    
+    // Find new words (words that exist now but didn't exist at turn start)
+    const newWords = currentWords.filter(word => !oldWordsSet.has(word));
+    
+    // Validate and score only new words
     let totalScore = 0;
     const validWords = [];
-    const allWordsWithStatus = [];
+    const invalidWords = [];
+    const allNewWords = []; // All new words with their status
     
-    words.forEach(word => {
-        if (dictionary.has(word)) {
-            const score = calculateScore(word.length);
-            scores.push(score);
-            totalScore += score;
-            validWords.push(word);
-            allWordsWithStatus.push({ word, valid: true, score });
-        } else {
-            allWordsWithStatus.push({ word, valid: false, score: 0 });
+    // Use Set to avoid duplicate words
+    const seenWords = new Set();
+    
+    newWords.forEach(word => {
+        if (!seenWords.has(word)) {
+            seenWords.add(word);
+            if (dictionary.has(word)) {
+                const score = calculateScore(word.length);
+                totalScore += score;
+                validWords.push({ word, score });
+                allNewWords.push({ word, isValid: true, score });
+            } else {
+                invalidWords.push(word);
+                allNewWords.push({ word, isValid: false });
+            }
         }
     });
     
-    return { totalScore, validWords, scores, allWordsWithStatus };
+    return { totalScore, validWords, invalidWords, allNewWords };
 }
 
-// Finish button handler
-$('#finishBtn').on('click', function() {
+// Finish turn
+async function finishTurnHandler() {
+    if (!isMyTurn || !currentGame) return;
+    
     if (dictionary.size === 0) {
         alert('מילון עדיין נטען...');
         return;
     }
     
-    // Stop timer
-    if (gameTimer) {
-        clearInterval(gameTimer);
-        gameTimer = null;
-    }
-    
     const result = validateAndScore();
     
-    // Remove letter stock
-    $('#letterStock').remove();
+    // Check if there are invalid words (not in dictionary)
+    if (result.invalidWords && result.invalidWords.length > 0) {
+        showInvalidWordsDialog(result);
+        return;
+    }
     
-    // Remove finish button
-    $('#finishBtn').remove();
+    const user = getCurrentUser();
     
-    // Remove timer display and progress bar
-    $('#timerDisplay').remove();
-    $('#timerProgress').remove();
+    // Update scores
+    let player1Score = currentGame.player1Score || 0;
+    let player2Score = currentGame.player2Score || 0;
     
-    // Disable all letter movement
-    $('.letter-tile').draggable('disable');
-    $('.grid-cell').droppable('disable');
+    if (currentGame.player1 === user.uid) {
+        player1Score += result.totalScore;
+    } else {
+        player2Score += result.totalScore;
+    }
     
-    // Create dialog with all words
+    // Keep unused letters and add new ones to reach 8
+    const unusedCount = currentPlayerLetters.length;
+    const needed = 8 - unusedCount;
+    const newLetters = generateRandomLetters(needed);
+    const updatedLetters = [...currentPlayerLetters, ...newLetters];
+    
+    // Update player letters
+    let player1Letters = currentGame.player1Letters || [];
+    let player2Letters = currentGame.player2Letters || [];
+    
+    if (currentGame.player1 === user.uid) {
+        player1Letters = updatedLetters;
+    } else {
+        player2Letters = updatedLetters;
+    }
+    
+    // Switch turn
+    const newCurrentTurn = currentGame.player1 === user.uid ? 
+        currentGame.player2 : currentGame.player1;
+    
+    // Lock all TEMP tiles before saving (remove data-temp attribute and clear TEMP set)
+    $('.letter-tile[data-temp="true"]').each(function() {
+        $(this).removeAttr('data-temp');
+        const tileId = $(this).attr('data-tile-id');
+        if (tileId && tileData[tileId]) {
+            tileData[tileId].isTemp = false;
+        }
+    });
+    tempTiles.clear(); // Clear all TEMP tiles - they're now locked
+    
+    // Save to Firestore
+    try {
+        const boardMap = boardToMap(board);
+        await finishTurn(
+            boardMap,
+            player1Letters,
+            player2Letters,
+            player1Score,
+            player2Score,
+            newCurrentTurn
+        );
+        
+        // Re-render board to show locked tiles (without draggable)
+        renderBoard();
+        
+        // Show results
+        showTurnResults(result);
+    } catch (error) {
+        console.error('Error finishing turn:', error);
+        alert('שגיאה בשמירת התור');
+    }
+}
+
+// Show invalid words dialog (prevents finishing turn)
+function showInvalidWordsDialog(result) {
     let dialogHtml = '<div class="results-dialog">';
-    dialogHtml += '<h2>תוצאות המשחק</h2>';
+    dialogHtml += '<h2>לא ניתן לסיים את התור</h2>';
+    dialogHtml += '<p style="margin-bottom: 15px; color: #DD4425; font-weight: 700;">יש מילים לא מוכרות במילון:</p>';
     dialogHtml += '<div class="words-list">';
     
-    if (result.allWordsWithStatus.length === 0) {
-        dialogHtml += '<p>לא נמצאו מילים</p>';
+    // Show all new words with ✓ or ✗
+    result.allNewWords.forEach(item => {
+        if (item.isValid) {
+            dialogHtml += `<div class="word-item valid">✓ ${item.word} - ${item.score} נקודות</div>`;
+        } else {
+            dialogHtml += `<div class="word-item invalid">✗ ${item.word} - לא במילון</div>`;
+        }
+    });
+    
+    dialogHtml += '</div>';
+    dialogHtml += '<p style="margin-top: 15px; color: #666; text-align: center;">אנא תקן את המילים המסומנות ב-✗ לפני סיום התור</p>';
+    dialogHtml += '<button class="close-dialog-btn">סגור</button>';
+    dialogHtml += '</div>';
+    
+    const overlay = $('<div>').addClass('dialog-overlay');
+    const dialog = $(dialogHtml);
+    overlay.append(dialog);
+    $('body').append(overlay);
+    
+    $('.close-dialog-btn').on('click', function() {
+        overlay.remove();
+    });
+}
+
+// Show turn results
+function showTurnResults(result) {
+    let dialogHtml = '<div class="results-dialog">';
+    dialogHtml += '<h2>תוצאות התור</h2>';
+    dialogHtml += '<div class="words-list">';
+    
+    if (result.validWords.length === 0) {
+        dialogHtml += '<p>לא נמצאו מילים תקניות</p>';
     } else {
-        result.allWordsWithStatus.forEach(item => {
-            if (item.valid) {
-                dialogHtml += `<div class="word-item valid">✓ ${item.word} - ${item.score} נקודות</div>`;
-            } else {
-                dialogHtml += `<div class="word-item invalid">✗ ${item.word}</div>`;
-            }
+        result.validWords.forEach(item => {
+            dialogHtml += `<div class="word-item valid">✓ ${item.word} - ${item.score} נקודות</div>`;
         });
     }
     
@@ -1169,31 +631,238 @@ $('#finishBtn').on('click', function() {
     dialogHtml += '<button class="close-dialog-btn">סגור</button>';
     dialogHtml += '</div>';
     
-    // Create overlay
     const overlay = $('<div>').addClass('dialog-overlay');
     const dialog = $(dialogHtml);
     overlay.append(dialog);
     $('body').append(overlay);
     
-    // Close dialog handlers
     $('.close-dialog-btn').on('click', function() {
         overlay.remove();
     });
+}
+
+// Open game
+window.openGame = function(gameId) {
+    $('#gameListScreen').addClass('hidden');
+    $('#gameScreen').removeClass('hidden');
     
-    overlay.on('click', function(e) {
-        if (e.target === overlay[0]) {
-            overlay.remove();
+    // Subscribe to game updates
+    subscribeToGame(gameId, (gameData) => {
+        if (!gameData) {
+            alert('המשחק לא נמצא');
+            showGameListScreen();
+            return;
+        }
+        
+        currentGame = gameData;
+        const user = getCurrentUser();
+        
+        // Update title with player names and scores
+        const player1Name = gameData.player1Name || 'שחקן 1';
+        const player2Name = gameData.player2Name || 'שחקן 2';
+        const score1 = gameData.player1Score || 0;
+        const score2 = gameData.player2Score || 0;
+        
+        // Determine which is "me" and which is opponent
+        const myName = gameData.player1 === user.uid ? player1Name : player2Name;
+        const myScore = gameData.player1 === user.uid ? score1 : score2;
+        const opponentName = gameData.player1 === user.uid ? player2Name : player1Name;
+        const opponentScore = gameData.player1 === user.uid ? score2 : score1;
+        
+        // Format: "Tamir (6) <> Adi (12)"
+        const titleHtml = `
+            <div class="text-sm">
+                <span class="font-bold text-gray-800">${myName}</span>
+                <span class="text-gray-500 font-normal">(${myScore})</span>
+                <span class="text-gray-400 mx-1">&lt;&gt;</span>
+                <span class="font-bold text-gray-900">${opponentName}</span>
+                <span class="text-gray-500 font-normal">(${opponentScore})</span>
+            </div>
+        `;
+        $('#gameTitle').html(titleHtml);
+        
+        // Check if it's my turn (before updating)
+        const wasMyTurn = isMyTurn;
+        isMyTurn = gameData.currentTurn === user.uid && gameData.status === 'active';
+        
+        // Update turn indicator banner
+        if (gameData.status === 'waiting') {
+            $('#turnIndicatorBanner').text('ממתין לשחקן שני').show();
+        } else if (isMyTurn) {
+            $('#turnIndicatorBanner').text('התור שלך').show();
+        } else {
+            $('#turnIndicatorBanner').text('ממתין ליריב').show();
+        }
+        
+        // Convert board from coordinate map to 10x10 array
+        board = Array(10).fill(null).map(() => Array(10).fill(null));
+        if (gameData.board) {
+            // If board is a coordinate map, convert it
+            if (typeof gameData.board === 'object' && !Array.isArray(gameData.board)) {
+                Object.keys(gameData.board).forEach(key => {
+                    const [row, col] = key.split(',').map(Number);
+                    if (row >= 0 && row < 10 && col >= 0 && col < 10) {
+                        board[row][col] = gameData.board[key];
+                    }
+                });
+            } else if (Array.isArray(gameData.board)) {
+                // Already an array
+                board = gameData.board;
+            }
+        }
+        
+        // Save board state at turn start if it's my turn
+        if (isMyTurn && !wasMyTurn) {
+            // Turn just switched to me - save current board state and clear TEMP tiles
+            tempTiles.clear(); // Clear any old TEMP tiles
+            saveBoardAtTurnStart();
+        } else if (isMyTurn && boardAtTurnStart === null) {
+            // Already my turn but board state not saved (e.g., just opened game)
+            tempTiles.clear(); // Clear any old TEMP tiles
+            saveBoardAtTurnStart();
+        } else if (!isMyTurn) {
+            // Not my turn - clear saved state and TEMP tiles
+            boardAtTurnStart = null;
+            tempTiles.clear();
+        }
+        
+        renderBoard();
+        
+        // Update letters
+        if (gameData.player1 === user.uid) {
+            currentPlayerLetters = [...(gameData.player1Letters || [])];
+        } else if (gameData.player2 === user.uid) {
+            currentPlayerLetters = [...(gameData.player2Letters || [])];
+        }
+        
+        // Initialize letters if empty and it's my turn
+        if (currentPlayerLetters.length === 0 && isMyTurn && gameData.status === 'active') {
+            currentPlayerLetters = generateRandomLetters(8);
+            // Save to Firestore
+            const player1Letters = gameData.player1 === user.uid ? 
+                currentPlayerLetters : (gameData.player1Letters || []);
+            const player2Letters = gameData.player2 === user.uid ? 
+                currentPlayerLetters : (gameData.player2Letters || []);
+            
+            // Update player letters in Firestore
+            updateGameState({
+                player1Letters,
+                player2Letters
+            });
+        }
+        
+        // Show/hide letters and finish button based on turn
+        if (isMyTurn && gameData.status === 'active') {
+            $('#letterStockContainer').removeClass('hidden');
+            $('#finishTurnContainer').removeClass('hidden');
+            updateLetterStock();
+        } else {
+            $('#letterStockContainer').addClass('hidden');
+            $('#finishTurnContainer').addClass('hidden');
+        }
+    });
+};
+
+// Initialize app
+// Wait for jQuery to be available
+function initApp() {
+    if (typeof $ === 'undefined') {
+        // jQuery not loaded yet, wait a bit and try again
+        setTimeout(initApp, 50);
+        return;
+    }
+    
+    $(document).ready(async function() {
+        console.log('Document ready, initializing app...');
+        
+        // Load dictionary
+        await loadDictionary();
+        
+        // Show login screen initially if not authenticated (before auth state listener)
+        const initialUser = getCurrentUser();
+        if (!initialUser) {
+            console.log('No initial user, showing login screen');
+            showLoginScreen();
+        }
+    
+    // Set up event handlers
+    $('#logoutBtn').on('click', async () => {
+        $('#userMenu').addClass('hidden');
+        await signOutUser();
+    });
+    
+    // Toggle user menu
+    $('#userNameBtn').on('click', function(e) {
+        e.stopPropagation();
+        $('#userMenu').toggleClass('hidden');
+    });
+    
+    // Close menu when clicking outside
+    $(document).on('click', function(e) {
+        if (!$(e.target).closest('#userNameBtn, #userMenu').length) {
+            $('#userMenu').addClass('hidden');
         }
     });
     
-    // Prevent closing when clicking inside dialog
-    dialog.on('click', function(e) {
-        e.stopPropagation();
+    $('#newGameBtn').on('click', () => {
+        $('#gameListScreen').addClass('hidden');
+        $('#newGameScreen').removeClass('hidden');
     });
     
-    // Update score display and show it
-    const scoreDisplay = $('#scoreDisplay');
-    scoreDisplay.html(`<p><strong>${result.totalScore} נקודות</strong></p>`);
-    scoreDisplay.show(); // Show the score display
-});
+    $('#backToGamesBtn').on('click', () => {
+        $('#newGameScreen').addClass('hidden');
+        showGameListScreen();
+    });
+    
+    $('#backToGamesFromGameBtn').on('click', async () => {
+        unsubscribeFromGame();
+        $('#gameScreen').addClass('hidden');
+        const { cleanupGameList } = await import('./gameList.js');
+        cleanupGameList();
+        showGameListScreen();
+    });
+    
+    $('#sendInviteBtn').on('click', async () => {
+        const email = $('#inviteEmail').val().trim();
+        if (!email) {
+            alert('אנא הזן כתובת אימייל');
+            return;
+        }
+        
+        try {
+            $('#sendInviteBtn').prop('disabled', true).text('שולח...');
+            await createGameAndInvite(email);
+            alert('הזמנה נשלחה בהצלחה!');
+            $('#newGameScreen').addClass('hidden');
+            showGameListScreen();
+        } catch (error) {
+            console.error('Error creating game:', error);
+            alert('שגיאה ביצירת המשחק');
+        } finally {
+            $('#sendInviteBtn').prop('disabled', false).text('שלח הזמנה');
+        }
+    });
+    
+    $('#finishTurnBtn').on('click', finishTurnHandler);
+    
+    // Check for pending invitations on login
+    onAuthStateChange(async (user) => {
+        if (user) {
+            // Show only first word of display name
+            const fullName = user.displayName || 'משתמש';
+            const firstName = fullName.split(' ')[0];
+            $('#userDisplayName').text(firstName);
+            
+            // Show game list immediately - don't block on invitation check
+            showGameListScreen();
+            
+            // Invitations will be shown in the game list, no need to check here
+        } else {
+            showLoginScreen();
+        }
+    });
+    });
+}
 
+// Start initialization
+initApp();

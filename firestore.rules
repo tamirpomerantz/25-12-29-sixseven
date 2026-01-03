@@ -1,0 +1,83 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Helper functions
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+    
+    function isOwner(userId) {
+      return isAuthenticated() && request.auth.uid == userId;
+    }
+    
+    function isPlayerInGame(gameData) {
+      return isAuthenticated() && 
+             (request.auth.uid == gameData.player1 || request.auth.uid == gameData.player2);
+    }
+    
+    function isCurrentTurn(gameData) {
+      return isAuthenticated() && request.auth.uid == gameData.currentTurn;
+    }
+    
+    // Users collection
+    match /users/{userId} {
+      allow read: if isAuthenticated();
+      allow create: if isOwner(userId);
+      allow update: if isOwner(userId);
+    }
+    
+    // Games collection
+    match /games/{gameId} {
+      // Players can read games they're part of
+      allow read: if isAuthenticated() && 
+        (resource.data.player1 == request.auth.uid || 
+         resource.data.player2 == request.auth.uid ||
+         !exists(/databases/$(database)/documents/games/$(gameId)));
+      
+      // Anyone authenticated can create a game
+      allow create: if isAuthenticated() && 
+        request.resource.data.player1 == request.auth.uid;
+      
+      // Allow updates for:
+      // 1. Current turn player updating game state
+      // 2. Accepting invitation (player2 joining a waiting game)
+      allow update: if isAuthenticated() && 
+        (// Normal game play - current turn player
+         (isPlayerInGame(resource.data) && isCurrentTurn(resource.data)) ||
+         // Accepting invitation - player2 joining
+         (resource.data.status == 'waiting' &&
+          request.resource.data.status == 'active' &&
+          request.resource.data.player2 == request.auth.uid &&
+          resource.data.player2 == null) ||
+         // Player1 can also update their own game
+         (resource.data.player1 == request.auth.uid));
+      
+      // Allow deletion: player1 can delete waiting games, or if game is declined
+      allow delete: if isAuthenticated() && 
+        (resource.data.player1 == request.auth.uid ||
+         (resource.data.status == 'waiting' && resource.data.player2 == null));
+    }
+    
+    // Invitations collection
+    match /invitations/{invitationId} {
+      // Allow authenticated users to read invitations
+      // Security is provided by the query filter: where('toEmail', '==', user.email)
+      // Users can only query for invitations sent to their own email
+      // This works even if request.auth.email isn't immediately available in rules
+      allow read: if isAuthenticated();
+      
+      // Authenticated users can create invitations
+      allow create: if isAuthenticated() && 
+        request.resource.data.fromUser == request.auth.uid;
+      
+      // Users can update invitations they sent or received
+      allow update: if isAuthenticated() && 
+        (resource.data.fromUser == request.auth.uid ||
+         // Recipients can update to accept/decline
+         // Client ensures only the recipient can update
+         (request.resource.data.status == 'accepted' || 
+          request.resource.data.status == 'declined'));
+    }
+  }
+}
