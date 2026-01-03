@@ -32,6 +32,11 @@ let scores = [];
 let dictionary = new Set();
 let tileIdCounter = 0; // Counter for unique tile IDs
 let tileData = {}; // Map of tileId -> {letter, element}
+let gameTimer = null; // Timer interval
+let gameStartTime = null; // When game started
+let timeRemaining = 60; // 60 seconds timer
+let gameStarted = false; // Whether game has started
+let gameState = null; // Saved game state
 
 // Seeded random number generator
 function seededRandom(seed) {
@@ -87,15 +92,330 @@ function generateLettersForDate() {
     return selectedLetters;
 }
 
+// Get today's date string (YYYY-MM-DD)
+function getTodayDateString() {
+    const today = new Date();
+    const year = today.getFullYear();
+    const month = String(today.getMonth() + 1).padStart(2, '0');
+    const day = String(today.getDate()).padStart(2, '0');
+    return `${year}-${month}-${day}`;
+}
+
+// Save game state to localStorage
+function saveGameState() {
+    if (!gameStarted) return; // Don't save if game hasn't started
+    
+    const today = getTodayDateString();
+    
+    // Convert tileData to serializable format (remove jQuery elements)
+    const serializableTileData = {};
+    Object.keys(tileData).forEach(tileId => {
+        serializableTileData[tileId] = {
+            letter: tileData[tileId].letter
+            // Don't save element reference
+        };
+    });
+    
+    // Calculate time remaining based on elapsed time
+    let currentTimeRemaining = timeRemaining;
+    if (gameStartTime) {
+        const elapsed = Math.floor((Date.now() - gameStartTime) / 1000);
+        currentTimeRemaining = Math.max(0, 60 - elapsed);
+    }
+    
+    const state = {
+        date: today,
+        board: board,
+        letterStock: letterStock,
+        tileData: serializableTileData,
+        tileIdCounter: tileIdCounter,
+        timeRemaining: currentTimeRemaining,
+        gameStarted: gameStarted,
+        gameStartTime: gameStartTime
+    };
+    
+    try {
+        localStorage.setItem('hebrewCrosswordGameState', JSON.stringify(state));
+    } catch (e) {
+        console.error('Error saving game state:', e);
+    }
+}
+
+// Load game state from localStorage
+function loadGameState() {
+    const savedState = localStorage.getItem('hebrewCrosswordGameState');
+    if (!savedState) return null;
+    
+    try {
+        const state = JSON.parse(savedState);
+        const today = getTodayDateString();
+        
+        // Check if saved state is for today
+        if (state.date === today) {
+            return state;
+        }
+        // If different day, clear old state
+        localStorage.removeItem('hebrewCrosswordGameState');
+        return null;
+    } catch (e) {
+        console.error('Error loading game state:', e);
+        return null;
+    }
+}
+
+// Show welcome dialog
+function showWelcomeDialog() {
+    const dialogHtml = `
+        <div class="welcome-dialog">
+            <h2>ברוכים הבאים למשחק התשבץ העברי!</h2>
+            <div class="welcome-content">
+                <p><strong>איך לשחק:</strong></p>
+                <ul>
+                    <li>גררו אותיות מהבנק ללוח המשחק</li>
+                    <li>צרו מילים אנכיות ואופקיות</li>
+                    <li>מילים אופקיות נקראות מימין לשמאל</li>
+                    <li>יש לכם 60 שניות ליצור כמה שיותר מילים</li>
+                    <li>לחצו על "סיימתי" כשסיימתם</li>
+                </ul>
+                <p><strong>ניקוד:</strong></p>
+                <ul>
+                    <li>2 אותיות = 2 נקודות</li>
+                    <li>3 אותיות = 4 נקודות</li>
+                    <li>4 אותיות = 6 נקודות</li>
+                    <li>וכך הלאה...</li>
+                </ul>
+            </div>
+            <button class="start-game-btn">התחל משחק</button>
+        </div>
+    `;
+    
+    const overlay = $('<div>').addClass('dialog-overlay');
+    const dialog = $(dialogHtml);
+    overlay.append(dialog);
+    $('body').append(overlay);
+    
+    $('.start-game-btn').on('click', function() {
+        overlay.remove();
+        startGame();
+    });
+}
+
+// Start the game with animation
+function startGame() {
+    gameStarted = true;
+    gameStartTime = Date.now();
+    timeRemaining = 60;
+    
+    // Hide welcome elements, show game elements
+    $('#finishBtn').show();
+    $('#timerDisplay').show();
+    $('#timerProgress').show();
+    
+    // Animate letters flying in
+    animateLettersFlyIn();
+    
+    // Start timer
+    startTimer();
+    
+    // Save initial state
+    saveGameState();
+}
+
+// Animate letters flying into the bank
+function animateLettersFlyIn() {
+    const letterStockContainer = $('#letterStock');
+    letterStockContainer.empty();
+    
+    letters.forEach((letter, index) => {
+        setTimeout(() => {
+            const { tile, tileId } = createLetterTile(letter);
+            letterStock.push(tileId);
+            
+            // Start position (off-screen)
+            tile.css({
+                position: 'absolute',
+                left: '-100px',
+                top: '50%',
+                opacity: 0,
+                transform: 'scale(0.5) rotate(-180deg)'
+            });
+            
+            letterStockContainer.append(tile);
+            
+            // Animate to final position
+            setTimeout(() => {
+                tile.css({
+                    position: 'relative',
+                    left: 'auto',
+                    top: 'auto',
+                    opacity: 1,
+                    transform: 'scale(1) rotate(0deg)',
+                    transition: 'all 0.5s ease-out'
+                });
+            }, 10);
+            
+            // After animation, remove transition for normal behavior
+            setTimeout(() => {
+                tile.css('transition', '');
+            }, 510);
+        }, index * 100); // Stagger animations by 100ms
+    });
+    
+    // After all letters are animated, initialize stock functionality
+    setTimeout(() => {
+        initializeLetterStockFunctionality();
+        saveGameState(); // Save state after letters are loaded
+    }, letters.length * 100 + 600);
+}
+
+// Initialize letter stock functionality (sortable, droppable, draggable)
+function initializeLetterStockFunctionality() {
+    const letterStockContainer = $('#letterStock');
+    
+    // Make letter stock sortable to maintain order and 2-row grid
+    letterStockContainer.sortable({
+        items: '.letter-tile',
+        tolerance: 'pointer',
+        cursor: 'move',
+        distance: 5,
+        delay: 50,
+        containment: 'parent',
+        grid: [48, 48],
+        forcePlaceholderSize: true,
+        placeholder: 'letter-tile-placeholder',
+        start: function(event, ui) {
+            ui.item.draggable('disable');
+        },
+        stop: function(event, ui) {
+            ui.item.draggable('enable');
+        },
+        update: function(event, ui) {
+            letterStock = [];
+            letterStockContainer.find('.letter-tile').each(function() {
+                const tileId = $(this).attr('data-tile-id');
+                if (tileId) {
+                    letterStock.push(tileId);
+                }
+            });
+            saveGameState();
+        }
+    });
+    
+    // Make letter stock droppable
+    letterStockContainer.droppable({
+        accept: '.letter-tile',
+        tolerance: 'pointer',
+        drop: function(event, ui) {
+            handleDropToStock($(this), ui.draggable);
+        }
+    });
+    
+    // Make letter tiles draggable
+    makeDraggable($('.letter-tile'));
+}
+
+// Start the 60 second timer
+function startTimer() {
+    updateTimerDisplay();
+    updateProgressBar();
+    
+    gameTimer = setInterval(() => {
+        timeRemaining--;
+        updateTimerDisplay();
+        updateProgressBar();
+        
+        if (timeRemaining <= 0) {
+            clearInterval(gameTimer);
+            // Auto-finish when time runs out
+            $('#finishBtn').click();
+        }
+        
+        saveGameState();
+    }, 1000);
+}
+
+// Update timer display
+function updateTimerDisplay() {
+    const minutes = Math.floor(timeRemaining / 60);
+    const seconds = timeRemaining % 60;
+    const timeString = `${minutes}:${String(seconds).padStart(2, '0')}`;
+    $('#timerDisplay').text(timeString);
+}
+
+// Update progress bar
+function updateProgressBar() {
+    const progress = ((60 - timeRemaining) / 60) * 100;
+    $('#timerProgressBar').css('width', progress + '%');
+}
+
 // Initialize game
 $(document).ready(function() {
     // Generate letters based on today's date
     letters = generateLettersForDate();
-    // letterStock will be populated in initializeLetterStock with tile IDs
+    
+    // Load saved game state
+    gameState = loadGameState();
     
     loadDictionary();
     initializeBoard();
-    initializeLetterStock();
+    
+    // Check if we have saved state for today
+    if (gameState && gameState.gameStarted) {
+        // Restore game state
+        board = gameState.board;
+        letterStock = gameState.letterStock;
+        tileIdCounter = gameState.tileIdCounter;
+        timeRemaining = gameState.timeRemaining;
+        gameStarted = gameState.gameStarted;
+        gameStartTime = gameState.gameStartTime;
+        
+        // Restore tileData (without element references - will be set when restoring visuals)
+        tileData = {};
+        Object.keys(gameState.tileData).forEach(tileId => {
+            tileData[tileId] = {
+                letter: gameState.tileData[tileId].letter,
+                element: null // Will be set when restoring visuals
+            };
+        });
+        
+        // Restore board visually
+        restoreBoard();
+        
+        // Restore letter stock
+        restoreLetterStock();
+        
+        // Show game UI
+        $('#finishBtn').show();
+        $('#timerDisplay').show();
+        $('#timerProgress').show();
+        
+        // Continue timer if game was in progress
+        if (timeRemaining > 0) {
+            // Calculate elapsed time and adjust timer
+            const elapsed = Math.floor((Date.now() - gameStartTime) / 1000);
+            timeRemaining = Math.max(0, 60 - elapsed);
+            updateTimerDisplay();
+            updateProgressBar();
+            
+            if (timeRemaining > 0) {
+                startTimer();
+            } else {
+                // Time ran out - auto finish
+                $('#finishBtn').click();
+            }
+        } else {
+            // Game was already finished
+            $('#finishBtn').hide();
+            $('#timerDisplay').hide();
+            $('#timerProgress').hide();
+        }
+    } else {
+        // New game - show welcome dialog
+        $('#finishBtn').hide();
+        $('#timerDisplay').hide();
+        $('#timerProgress').hide();
+        showWelcomeDialog();
+    }
 });
 
 // Load dictionary from file
@@ -335,66 +655,53 @@ function initializeBoard() {
         tolerance: 'pointer',
         drop: function(event, ui) {
             handleDrop($(this), ui.draggable);
+            saveGameState(); // Save state after drop
         }
     });
 }
 
-// Initialize letter stock (2 rows of 6)
-function initializeLetterStock() {
+// Restore board from saved state
+function restoreBoard() {
+    for (let row = 0; row < 7; row++) {
+        for (let col = 0; col < 7; col++) {
+            const tileId = board[row][col];
+            if (tileId && tileData[tileId]) {
+                const tileInfo = tileData[tileId];
+                const cell = $(`.grid-cell[data-row="${row}"][data-col="${col}"]`);
+                const tile = $('<div>')
+                    .addClass('letter-tile')
+                    .text(tileInfo.letter)
+                    .attr('data-letter', tileInfo.letter)
+                    .attr('data-tile-id', tileId)
+                    .attr('data-row', row)
+                    .attr('data-col', col);
+                tileData[tileId].element = tile;
+                cell.append(tile);
+                makeDraggable(tile);
+            }
+        }
+    }
+}
+
+// Restore letter stock from saved state
+function restoreLetterStock() {
     const letterStockContainer = $('#letterStock');
     letterStockContainer.empty();
-    letterStock = []; // Reset stock array
-    tileData = {}; // Reset tile data
-    tileIdCounter = 0; // Reset counter
     
-    letters.forEach((letter) => {
-        const { tile, tileId } = createLetterTile(letter);
-        letterStock.push(tileId);
-        letterStockContainer.append(tile);
-    });
-    
-    // Make letter stock sortable to maintain order and 2-row grid
-    letterStockContainer.sortable({
-        items: '.letter-tile',
-        tolerance: 'pointer',
-        cursor: 'move',
-        distance: 5, // Small distance to prevent accidental sorting
-        delay: 50, // Small delay to distinguish from drag-to-board
-        containment: 'parent',
-        grid: [48, 48], // Snap to grid (48px tiles)
-        forcePlaceholderSize: true,
-        placeholder: 'letter-tile-placeholder',
-        start: function(event, ui) {
-            // When starting to sort, temporarily disable draggable to prevent conflicts
-            ui.item.draggable('disable');
-        },
-        stop: function(event, ui) {
-            // Re-enable draggable after sorting
-            ui.item.draggable('enable');
-        },
-        update: function(event, ui) {
-            // Update letterStock array to match new order (using tile IDs)
-            letterStock = [];
-            letterStockContainer.find('.letter-tile').each(function() {
-                const tileId = $(this).attr('data-tile-id');
-                if (tileId) {
-                    letterStock.push(tileId);
-                }
-            });
+    letterStock.forEach((tileId) => {
+        const tileInfo = tileData[tileId];
+        if (tileInfo) {
+            const tile = $('<div>')
+                .addClass('letter-tile')
+                .text(tileInfo.letter)
+                .attr('data-letter', tileInfo.letter)
+                .attr('data-tile-id', tileId);
+            tileData[tileId].element = tile;
+            letterStockContainer.append(tile);
         }
     });
     
-    // Make letter stock droppable (so letters can be dragged back from board)
-    letterStockContainer.droppable({
-        accept: '.letter-tile',
-        tolerance: 'pointer',
-        drop: function(event, ui) {
-            handleDropToStock($(this), ui.draggable);
-        }
-    });
-    
-    // Make letter tiles draggable (touch-optimized) - for dragging to board
-    makeDraggable($('.letter-tile'));
+    initializeLetterStockFunctionality();
 }
 
 // Create a letter tile with unique ID
@@ -465,6 +772,7 @@ function rebuildLetterStock() {
                     letterStock.push(tileId);
                 }
             });
+            saveGameState(); // Save state after sorting
         }
     });
     
@@ -516,6 +824,7 @@ function handleDropToStock(stockContainer, draggable) {
     // Rebuild the entire stock to maintain proper 2-row grid
     // This will recreate all tiles from the letterStock array
     rebuildLetterStock();
+    saveGameState(); // Save state after drop to stock
 }
 
 // Handle drop event
@@ -816,6 +1125,12 @@ $('#finishBtn').on('click', function() {
         return;
     }
     
+    // Stop timer
+    if (gameTimer) {
+        clearInterval(gameTimer);
+        gameTimer = null;
+    }
+    
     const result = validateAndScore();
     
     // Remove letter stock
@@ -823,6 +1138,10 @@ $('#finishBtn').on('click', function() {
     
     // Remove finish button
     $('#finishBtn').remove();
+    
+    // Remove timer display and progress bar
+    $('#timerDisplay').remove();
+    $('#timerProgress').remove();
     
     // Disable all letter movement
     $('.letter-tile').draggable('disable');

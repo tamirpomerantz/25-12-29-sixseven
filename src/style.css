@@ -141,6 +141,34 @@ h1 {
     visibility: visible !important;
 }
 
+.timer-progress {
+    width: 100%;
+    height: 6px;
+    background-color: #CDC8BD;
+    border-radius: 3px;
+    margin-bottom: 20px;
+    overflow: hidden;
+}
+
+.timer-progress-bar {
+    height: 100%;
+    background-color: #0A8913;
+    width: 0%;
+    transition: width 1s linear;
+    border-radius: 3px;
+}
+
+.timer-display {
+    padding: 12px 20px;
+    background-color: #f0f0f0;
+    border-radius: 5px;
+    font-weight: 700;
+    font-size: 1.2em;
+    color: #2B749F;
+    min-width: 80px;
+    text-align: center;
+}
+
 .controls {
     display: flex;
     justify-content: center;
@@ -215,6 +243,81 @@ h1 {
     justify-content: center;
     z-index: 10000;
     padding: 20px;
+}
+
+.welcome-dialog {
+    background-color: white;
+    border-radius: 10px;
+    padding: 30px;
+    max-width: 500px;
+    width: 100%;
+    box-shadow: 0 4px 20px rgba(0, 0, 0, 0.3);
+}
+
+.welcome-dialog h2 {
+    text-align: center;
+    color: #333;
+    margin-bottom: 20px;
+    font-size: 1.8em;
+    font-weight: 700;
+}
+
+.welcome-content {
+    margin-bottom: 25px;
+    font-size: 1em;
+    line-height: 1.6;
+}
+
+.welcome-content p {
+    margin-bottom: 10px;
+    font-weight: 700;
+    color: #2B749F;
+}
+
+.welcome-content ul {
+    list-style: none;
+    padding-right: 20px;
+    margin-bottom: 15px;
+}
+
+.welcome-content li {
+    margin-bottom: 8px;
+    color: #555;
+    position: relative;
+    padding-right: 15px;
+}
+
+.welcome-content li:before {
+    content: '•';
+    position: absolute;
+    right: 0;
+    color: #2B749F;
+    font-weight: bold;
+}
+
+.start-game-btn {
+    width: 100%;
+    padding: 14px 30px;
+    min-height: 48px;
+    font-size: 1.2em;
+    font-weight: 700;
+    background-color: #0A8913;
+    color: white;
+    border: none;
+    border-radius: 5px;
+    cursor: pointer;
+    transition: background-color 0.2s;
+    -webkit-tap-highlight-color: transparent;
+    touch-action: manipulation;
+}
+
+.start-game-btn:hover {
+    background-color: #52AE58;
+}
+
+.start-game-btn:active {
+    background-color: #08700f;
+    transform: scale(0.98);
 }
 
 .results-dialog {
