@@ -1,7 +1,7 @@
 // Main game logic for multiplayer infinite grid crossword game
 import { onAuthStateChange, signOutUser, showLoginScreen, getCurrentUser } from './auth.js';
 import { showGameListScreen, loadGames } from './gameList.js';
-import { createGameAndInvite, checkPendingInvitations, acceptInvitation } from './invitations.js';
+import { createGameAndInvite, checkPendingInvitations, acceptInvitation, joinGameViaLink, createGameForLink } from './invitations.js';
 import { subscribeToGame, unsubscribeFromGame, updateBoard, finishTurn, getCurrentGameId, updateGameState } from './gameState.js';
 
 // Letter distribution percentages
@@ -503,6 +503,8 @@ function validateAndScore() {
 async function finishTurnHandler() {
     if (!isMyTurn || !currentGame) return;
     
+    // Allow finishing turn even in waiting games (for player1 to make first move)
+    
     if (dictionary.size === 0) {
         alert('מילון עדיין נטען...');
         return;
@@ -544,9 +546,20 @@ async function finishTurnHandler() {
         player2Letters = updatedLetters;
     }
     
-    // Switch turn
-    const newCurrentTurn = currentGame.player1 === user.uid ? 
-        currentGame.player2 : currentGame.player1;
+    // Switch turn - but if game is waiting (no player2), keep it as player1's turn
+    let newCurrentTurn;
+    let gameStatus = currentGame.status;
+    
+    if (currentGame.status === 'waiting' || !currentGame.player2) {
+        // Game is waiting - keep it as player1's turn and keep status as waiting
+        newCurrentTurn = currentGame.player1;
+        gameStatus = 'waiting';
+    } else {
+        // Normal turn switch
+        newCurrentTurn = currentGame.player1 === user.uid ? 
+            currentGame.player2 : currentGame.player1;
+        gameStatus = 'active';
+    }
     
     // Lock all TEMP tiles before saving (remove data-temp attribute and clear TEMP set)
     $('.letter-tile[data-temp="true"]').each(function() {
@@ -569,6 +582,11 @@ async function finishTurnHandler() {
             player2Score,
             newCurrentTurn
         );
+        
+        // Update status if needed (keep waiting if no player2)
+        if (gameStatus === 'waiting') {
+            await updateGameState({ status: 'waiting' });
+        }
         
         // Re-render board to show locked tiles (without draggable)
         renderBoard();
@@ -641,16 +659,106 @@ function showTurnResults(result) {
     });
 }
 
+// Parse game ID from URL
+function getGameIdFromUrl() {
+    const path = window.location.pathname;
+    const match = path.match(/^\/game\/([^\/]+)$/);
+    return match ? match[1] : null;
+}
+
+// Update URL to game link
+function updateUrlToGame(gameId) {
+    const newPath = `/game/${gameId}`;
+    if (window.location.pathname !== newPath) {
+        window.history.pushState({ gameId }, '', newPath);
+    }
+}
+
+// Copy game link to clipboard
+function copyGameLink(gameId) {
+    const link = `${window.location.origin}/game/${gameId}`;
+    navigator.clipboard.writeText(link).then(() => {
+        // Show temporary message
+        const message = $('<div>').text('הלינק הועתק!').css({
+            position: 'fixed',
+            top: '20px',
+            left: '50%',
+            transform: 'translateX(-50%)',
+            background: '#4CAF50',
+            color: 'white',
+            padding: '12px 24px',
+            borderRadius: '8px',
+            zIndex: 10000,
+            fontSize: '14px',
+            fontWeight: 'bold'
+        });
+        $('body').append(message);
+        setTimeout(() => message.fadeOut(() => message.remove()), 2000);
+    }).catch(err => {
+        console.error('Failed to copy link:', err);
+        alert('שגיאה בהעתקת הלינק');
+    });
+}
+
+// Show game access denied screen
+function showGameAccessDeniedScreen() {
+    $('.screen').addClass('hidden');
+    $('#gameAccessDeniedScreen').removeClass('hidden');
+    // Clear URL
+    window.history.pushState({}, '', '/');
+}
+
 // Open game
-window.openGame = function(gameId) {
+window.openGame = async function(gameId, shouldAutoJoin = false) {
     $('#gameListScreen').addClass('hidden');
+    $('#gameAccessDeniedScreen').addClass('hidden');
     $('#gameScreen').removeClass('hidden');
     
+    // Update URL
+    updateUrlToGame(gameId);
+    
+    // If shouldAutoJoin is true, try to join the game first
+    if (shouldAutoJoin) {
+        try {
+            await joinGameViaLink(gameId);
+            // Wait a bit for Firestore to update
+            await new Promise(resolve => setTimeout(resolve, 500));
+        } catch (error) {
+            console.error('Error auto-joining game:', error);
+            // Check for permission errors
+            if (error.code === 'permission-denied' || error.code === 'permissions-denied' || 
+                (error.message && error.message.includes('permission'))) {
+                showGameAccessDeniedScreen();
+                return;
+            }
+            // If game not found, show error and return
+            if (error.message && error.message.includes('not found')) {
+                showGameAccessDeniedScreen();
+                return;
+            }
+            // Continue anyway - might already be joined or other error
+        }
+    }
+    
     // Subscribe to game updates
-    subscribeToGame(gameId, (gameData) => {
+    subscribeToGame(gameId, (gameData, error) => {
         if (!gameData) {
-            alert('המשחק לא נמצא');
-            showGameListScreen();
+            // Check if it's a permission error
+            if (error && (error.code === 'permission-denied' || error.code === 'permissions-denied' || 
+                (error.message && error.message.includes('permission')))) {
+                showGameAccessDeniedScreen();
+                return;
+            }
+            // Check if it's a permission error by trying to detect it
+            // If we tried to auto-join and got no data, it might be permissions
+            if (shouldAutoJoin) {
+                showGameAccessDeniedScreen();
+                return;
+            }
+            // Only show error if we didn't just try to auto-join (to avoid double error)
+            if (!shouldAutoJoin) {
+                showGameAccessDeniedScreen();
+            }
             return;
         }
         
@@ -682,17 +790,46 @@ window.openGame = function(gameId) {
         $('#gameTitle').html(titleHtml);
         
         // Check if it's my turn (before updating)
+        // For waiting games, player1 can still make moves
         const wasMyTurn = isMyTurn;
-        isMyTurn = gameData.currentTurn === user.uid && gameData.status === 'active';
+        const isPlayer1 = gameData.player1 === user.uid;
+        isMyTurn = (gameData.currentTurn === user.uid && gameData.status === 'active') || 
+                   (gameData.status === 'waiting' && isPlayer1);
         
         // Update turn indicator banner
         if (gameData.status === 'waiting') {
-            $('#turnIndicatorBanner').text('ממתין לשחקן שני').show();
+            if (isPlayer1) {
+                $('#turnIndicatorBanner').text('ממתין לשחקן שני').show();
+            } else {
+                // User just joined, game should become active soon
+                $('#turnIndicatorBanner').text('ממתין לשחקן שני').show();
+            }
         } else if (isMyTurn) {
             // Hide the banner when it's my turn - only show the finish turn button
             $('#turnIndicatorBanner').hide();
         } else {
             $('#turnIndicatorBanner').text('ממתין ליריב').show();
+        }
+        
+        // Add copy link button if waiting for opponent
+        const isWaiting = gameData.status === 'waiting' && isPlayer1;
+        const isWaitingForOpponent = gameData.status === 'active' && !isMyTurn;
+        
+        // Remove existing copy link button if any
+        $('#copyGameLinkBtn').remove();
+        
+        if (isWaiting || isWaitingForOpponent) {
+            const copyBtn = $('<button>')
+                .attr('id', 'copyGameLinkBtn')
+                .addClass('px-3 py-1.5 bg-blue-500 text-white rounded-lg text-sm font-medium hover:bg-blue-600 transition-colors ml-2')
+                .text('העתק לינק')
+                .on('click', function(e) {
+                    e.stopPropagation();
+                    copyGameLink(gameId);
+                });
+            
+            // Insert after turn indicator banner
+            $('#turnIndicatorBanner').after(copyBtn);
         }
         
         // Convert board from coordinate map to 10x10 array
@@ -713,6 +850,7 @@ window.openGame = function(gameId) {
         }
         
         // Save board state at turn start if it's my turn
+        // This applies to both active games and waiting games where player1 can make moves
         if (isMyTurn && !wasMyTurn) {
             // Turn just switched to me - save current board state and clear TEMP tiles
             tempTiles.clear(); // Clear any old TEMP tiles
@@ -736,8 +874,9 @@ window.openGame = function(gameId) {
             currentPlayerLetters = [...(gameData.player2Letters || [])];
         }
         
-        // Initialize letters if empty and it's my turn
-        if (currentPlayerLetters.length === 0 && isMyTurn && gameData.status === 'active') {
+        // Initialize letters if empty and it's my turn (for active games) or if waiting and player1
+        if (currentPlayerLetters.length === 0 && 
+            ((isMyTurn && gameData.status === 'active') || (gameData.status === 'waiting' && isPlayer1))) {
             currentPlayerLetters = generateRandomLetters(8);
             // Save to Firestore
             const player1Letters = gameData.player1 === user.uid ? 
@@ -753,7 +892,8 @@ window.openGame = function(gameId) {
         }
         
         // Show/hide letters and finish button based on turn
-        if (isMyTurn && gameData.status === 'active') {
+        // Show for active games when it's my turn, or for waiting games when I'm player1
+        if ((isMyTurn && gameData.status === 'active') || (gameData.status === 'waiting' && isPlayer1)) {
             $('#letterStockContainer').removeClass('hidden');
             $('#finishTurnContainer').removeClass('hidden');
             updateLetterStock();
@@ -779,12 +919,8 @@ function initApp() {
         // Load dictionary
         await loadDictionary();
         
-        // Show login screen initially if not authenticated (before auth state listener)
-        const initialUser = getCurrentUser();
-        if (!initialUser) {
-            console.log('No initial user, showing login screen');
-            showLoginScreen();
-        }
+        // Don't check user here - wait for onAuthStateChange which will be called immediately
+        // with current user if exists (handled in auth.js)
     
     // Set up event handlers
     $('#logoutBtn').on('click', async () => {
@@ -805,9 +941,16 @@ function initApp() {
         }
     });
     
-    $('#newGameBtn').on('click', () => {
-        $('#gameListScreen').addClass('hidden');
-        $('#newGameScreen').removeClass('hidden');
+    $('#newGameBtn').on('click', async () => {
+        try {
+            // Create a new game for link sharing
+            const gameId = await createGameForLink();
+            // Open the game immediately
+            window.openGame(gameId);
+        } catch (error) {
+            console.error('Error creating game:', error);
+            alert('שגיאה ביצירת המשחק');
+        }
     });
     
     $('#backToGamesBtn').on('click', () => {
@@ -820,6 +963,8 @@ function initApp() {
         $('#gameScreen').addClass('hidden');
         const { cleanupGameList } = await import('./gameList.js');
         cleanupGameList();
+        // Clear URL
+        window.history.pushState({}, '', '/');
         showGameListScreen();
     });
     
@@ -846,7 +991,27 @@ function initApp() {
     
     $('#finishTurnBtn').on('click', finishTurnHandler);
     
+    // Game access denied screen buttons
+    $('#goToHomeFromDeniedBtn').on('click', () => {
+        $('#gameAccessDeniedScreen').addClass('hidden');
+        showGameListScreen();
+    });
+    
+    $('#createNewGameFromDeniedBtn').on('click', async () => {
+        try {
+            // Create a new game for link sharing
+            const gameId = await createGameForLink();
+            // Open the game immediately
+            $('#gameAccessDeniedScreen').addClass('hidden');
+            window.openGame(gameId);
+        } catch (error) {
+            console.error('Error creating game:', error);
+            alert('שגיאה ביצירת המשחק');
+        }
+    });
+    
     // Check for pending invitations on login
+    // This will be called immediately with current user if exists (handled in auth.js)
     onAuthStateChange(async (user) => {
         if (user) {
             // Show only first word of display name
@@ -854,11 +1019,29 @@ function initApp() {
             const firstName = fullName.split(' ')[0];
             $('#userDisplayName').text(firstName);
             
-            // Show game list immediately - don't block on invitation check
-            showGameListScreen();
+            // Check if there's a game ID in the URL
+            const gameIdFromUrl = getGameIdFromUrl();
+            if (gameIdFromUrl) {
+                // Open the game with auto-join - don't show login screen
+                console.log('User logged in with game link, opening game');
+                window.openGame(gameIdFromUrl, true);
+            } else {
+                // Show game list immediately - don't block on invitation check
+                console.log('User logged in, showing game list');
+                showGameListScreen();
+            }
             
             // Invitations will be shown in the game list, no need to check here
         } else {
+            // User not logged in - check if there's a game link
+            const gameIdFromUrl = getGameIdFromUrl();
+            if (gameIdFromUrl) {
+                // There's a game link - show login screen, game will open after login
+                console.log('User not logged in but game link detected, showing login screen');
+            } else {
+                // No game link - show login screen normally
+                console.log('User not logged in, showing login screen');
+            }
             showLoginScreen();
         }
     });

@@ -11,6 +11,7 @@ export function showGameListScreen() {
   $('#loginScreen').addClass('hidden');
   $('#newGameScreen').addClass('hidden');
   $('#gameScreen').addClass('hidden');
+  $('#gameAccessDeniedScreen').addClass('hidden');
   $('#gameListScreen').removeClass('hidden');
   
   loadGames();
@@ -170,10 +171,11 @@ function displayGames(games, invitations = []) {
     return;
   }
   
-  const gamesHtml = games.map(game => {
+    const gamesHtml = games.map(game => {
     const isMyTurn = game.currentTurn === user.uid && game.status === 'active';
     const isWaiting = game.status === 'waiting';
     const isFinished = game.status === 'finished';
+    const isPlayer1 = game.player1 === user.uid;
     
     // Get player names and scores
     const player1Name = game.player1Name || 'שחקן 1';
@@ -197,6 +199,13 @@ function displayGames(games, invitations = []) {
       statusButton = '<button class="px-3 py-1.5 bg-green-500 text-white rounded-lg text-sm font-medium">תורך</button>';
     } else {
       statusButton = '<button class="px-3 py-1.5 bg-gray-200 rounded-lg text-gray-800 text-sm font-medium">מחכה</button>';
+    }
+    
+    // Copy link button - show for waiting games (player1) or active games where it's not my turn
+    let copyLinkButton = '';
+    const showCopyLink = (isWaiting && isPlayer1) || (!isMyTurn && !isFinished && game.status === 'active');
+    if (showCopyLink) {
+      copyLinkButton = `<button class="copy-game-link-btn px-3 py-1.5 bg-blue-500 text-white rounded-lg text-sm font-medium hover:bg-blue-600 transition-colors" data-game-id="${game.id}">העתק לינק</button>`;
     }
     
     // Calculate time since last update
@@ -234,6 +243,7 @@ function displayGames(games, invitations = []) {
             </div>
             <div class="text-xs text-gray-500 mt-1">${timeAgo}</div>
           </div>
+          ${copyLinkButton}
         </div>
       </div>
     `;
@@ -243,11 +253,43 @@ function displayGames(games, invitations = []) {
   container.html(html);
   
   // Add click handlers for games - entire card is clickable
-  $('[data-game-id]').not('[data-invitation-id]').on('click', function() {
+  $('[data-game-id]').not('[data-invitation-id]').on('click', function(e) {
+    // Don't trigger if clicking the copy link button
+    if ($(e.target).hasClass('copy-game-link-btn') || $(e.target).closest('.copy-game-link-btn').length) {
+      return;
+    }
     const gameId = $(this).data('game-id');
     if (window.openGame) {
       window.openGame(gameId);
     }
+  });
+  
+  // Add click handlers for copy link buttons
+  $('.copy-game-link-btn').on('click', function(e) {
+    e.stopPropagation();
+    const gameId = $(this).data('game-id');
+    const link = `${window.location.origin}/game/${gameId}`;
+    navigator.clipboard.writeText(link).then(() => {
+      // Show temporary message
+      const message = $('<div>').text('הלינק הועתק!').css({
+        position: 'fixed',
+        top: '20px',
+        left: '50%',
+        transform: 'translateX(-50%)',
+        background: '#4CAF50',
+        color: 'white',
+        padding: '12px 24px',
+        borderRadius: '8px',
+        zIndex: 10000,
+        fontSize: '14px',
+        fontWeight: 'bold'
+      });
+      $('body').append(message);
+      setTimeout(() => message.fadeOut(() => message.remove()), 2000);
+    }).catch(err => {
+      console.error('Failed to copy link:', err);
+      alert('שגיאה בהעתקת הלינק');
+    });
   });
   
   // Add click handlers for invitation buttons

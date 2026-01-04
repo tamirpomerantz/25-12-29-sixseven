@@ -30,9 +30,11 @@ service cloud.firestore {
     // Games collection
     match /games/{gameId} {
       // Players can read games they're part of
+      // Also allow reading waiting games so users can join via link
       allow read: if isAuthenticated() && 
         (resource.data.player1 == request.auth.uid || 
          resource.data.player2 == request.auth.uid ||
+         resource.data.status == 'waiting' ||
          !exists(/databases/$(database)/documents/games/$(gameId)));
       
       // Anyone authenticated can create a game

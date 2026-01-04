@@ -27,7 +27,8 @@ export function subscribeToGame(gameId, callback) {
     }
   }, (error) => {
     console.error('Error listening to game:', error);
-    callback(null);
+    // Pass error info to callback so it can handle permission errors
+    callback(null, error);
   });
   
   return gameUnsubscribe;

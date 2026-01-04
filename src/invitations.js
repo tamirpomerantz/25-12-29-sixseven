@@ -1,5 +1,5 @@
 // Invitation management
-import { collection, addDoc, query, where, getDocs, updateDoc, doc, deleteDoc, serverTimestamp } from 'firebase/firestore';
+import { collection, addDoc, query, where, getDocs, getDoc, updateDoc, doc, deleteDoc, serverTimestamp } from 'firebase/firestore';
 import { db } from './firebase.js';
 import { getCurrentUser } from './auth.js';
 import { refreshGameList } from './gameList.js';
@@ -136,6 +136,79 @@ export async function declineInvitation(invitationId) {
     });
   } catch (error) {
     console.error('Error declining invitation:', error);
+    throw error;
+  }
+}
+
+// Create a new game without invitation (for link sharing)
+export async function createGameForLink() {
+  const user = getCurrentUser();
+  if (!user) throw new Error('User not authenticated');
+  
+  try {
+    // Create game document
+    const gameData = {
+      player1: user.uid,
+      player1Name: user.displayName || 'שחקן 1',
+      player2: null,
+      player2Name: null,
+      currentTurn: user.uid,
+      board: {},
+      player1Letters: [],
+      player2Letters: [],
+      player1Score: 0,
+      player2Score: 0,
+      status: 'waiting',
+      createdAt: serverTimestamp(),
+      updatedAt: serverTimestamp()
+    };
+    
+    const gameRef = await addDoc(collection(db, 'games'), gameData);
+    const gameId = gameRef.id;
+    
+    return gameId;
+  } catch (error) {
+    console.error('Error creating game:', error);
+    throw error;
+  }
+}
+
+// Join a waiting game via link (auto-join)
+export async function joinGameViaLink(gameId) {
+  const user = getCurrentUser();
+  if (!user) throw new Error('User not authenticated');
+  
+  try {
+    // Get the game
+    const gameRef = doc(db, 'games', gameId);
+    const gameSnap = await getDoc(gameRef);
+    
+    if (!gameSnap.exists()) {
+      throw new Error('Game not found');
+    }
+    
+    const gameData = gameSnap.data();
+    
+    // Check if game is waiting and user is not player1
+    if (gameData.status === 'waiting' && gameData.player1 !== user.uid) {
+      // Auto-join as player2
+      await updateDoc(gameRef, {
+        player2: user.uid,
+        player2Name: user.displayName || 'שחקן 2',
+        status: 'active',
+        updatedAt: serverTimestamp()
+      });
+      
+      // Refresh game list
+      refreshGameList();
+      
+      return gameId;
+    }
+    
+    // If user is player1 or game is already active, just return the gameId
+    return gameId;
+  } catch (error) {
+    console.error('Error joining game via link:', error);
     throw error;
   }
 }

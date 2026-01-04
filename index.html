@@ -66,6 +66,30 @@
         </div>
     </div>
     
+    <!-- Game Access Denied Screen -->
+    <div id="gameAccessDeniedScreen" class="screen hidden bg-white min-h-screen">
+        <div class="container mx-auto px-4 py-6 max-w-2xl">
+            <div class="flex flex-col items-center justify-center min-h-[60vh] text-center">
+                <div class="bg-gray-50 rounded-lg p-8 shadow-md max-w-md w-full">
+                    <div class="text-6xl mb-4">🔒</div>
+                    <h1 class="text-2xl font-bold text-gray-800 mb-4">אין לך גישה למשחק הזה</h1>
+                    <p class="text-gray-600 mb-6">
+                        המשחק הזה לא שייך לך או שכבר לא קיים. 
+                        אתה יכול לחזור למסך הראשי או להתחיל משחק חדש.
+                    </p>
+                    <div class="flex flex-col gap-3">
+                        <button id="goToHomeFromDeniedBtn" class="px-6 py-3 bg-[#58b4a9] text-white rounded-lg font-bold text-sm hover:bg-[#4a9d93] transition-colors">
+                            חזרה למסך הראשי
+                        </button>
+                        <button id="createNewGameFromDeniedBtn" class="px-6 py-3 bg-blue-500 text-white rounded-lg font-bold text-sm hover:bg-blue-600 transition-colors">
+                            התחל משחק חדש
+                        </button>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+    
     <!-- Game Screen -->
     <div id="gameScreen" class="screen hidden bg-white min-h-screen">
         <div class="container mx-auto px-4 py-6 max-w-4xl">
