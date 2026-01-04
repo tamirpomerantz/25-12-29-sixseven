@@ -18,6 +18,9 @@ lerna-debug.log*
 # it commented so all members can deploy to the same project(s) in .firebaserc.
 # .firebaserc
 
+# Sensitive configuration files
+src/firebase.js
+
 # Build output
 dist/
 dist-ssr/

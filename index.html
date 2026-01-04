@@ -70,21 +70,7 @@
     <div id="gameScreen" class="screen hidden bg-white min-h-screen">
         <div class="container mx-auto px-4 py-6 max-w-4xl">
             <!-- Header - All in one row -->
-            <div class="flex items-center justify-between gap-3 mb-4 flex-wrap">
-             
-                <div id="turnIndicatorBanner" class="bg-blue-100 px-3 py-2 rounded-lg text-sm text-gray-800 flex-shrink-0 whitespace-nowrap">
-                    <!-- Turn indicator text will be inserted here -->
-                </div>
-                <!-- Player Scores -->
-                <div id="gameTitle" class="flex-1 text-sm text-center min-w-0">
-                    <!-- Player names with scores will be inserted here -->
-                </div>
-                <button id="backToGamesFromGameBtn" class="px-3 py-2 bg-gray-200 rounded-lg text-gray-800 font-medium text-lg hover:bg-gray-300 flex-shrink-0">
-                    ←
-                </button>
-                <!-- Turn Indicator Banner -->
-              
-            </div>
+
             
             <!-- Game Board Container -->
             <div class="flex justify-center mb-6">
@@ -100,12 +86,32 @@
                 </div>
             </div>
             
-            <!-- Finish Turn Button (only shown when it's player's turn) -->
-            <div id="finishTurnContainer" class="hidden text-center">
-                <button id="finishTurnBtn" class="px-6 py-2 bg-gray-300 rounded-lg text-gray-800 font-medium text-sm hover:bg-gray-400">
-                    סיים תור
+            <div class="flex items-center justify-between gap-3 mb-4 flex-wrap">
+             
+                <div id="finishTurnContainer" class="hidden text-center">
+                    <button id="finishTurnBtn" class="px-6 py-2 bg-gray-300 rounded-lg text-gray-800 font-medium text-sm hover:bg-gray-400">
+                        סיים תור
+                    </button>
+                </div>
+
+                
+                <div id="turnIndicatorBanner" class="bg-blue-100 px-3 py-2 rounded-lg text-sm text-gray-800 flex-shrink-0 whitespace-nowrap">
+                    <!-- Turn indicator text will be inserted here -->
+                </div>
+                <!-- Player Scores -->
+                <div id="gameTitle" class="flex-1 text-sm text-center min-w-0">
+                    <!-- Player names with scores will be inserted here -->
+                </div>
+                <button id="backToGamesFromGameBtn" class="px-3 py-2 bg-gray-200 rounded-lg text-gray-800 font-medium text-lg hover:bg-gray-300 flex-shrink-0">
+                    ←
                 </button>
+                <!-- Turn Indicator Banner -->
+              
             </div>
+
+
+            <!-- Finish Turn Button (only shown when it's player's turn) -->
+           
         </div>
     </div>
     

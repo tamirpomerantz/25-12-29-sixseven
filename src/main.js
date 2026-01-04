@@ -308,13 +308,13 @@ function updateLetterStock() {
     const stock = $('#letterStock');
     stock.empty();
     
-    // Use CSS Grid for 2 rows of 4 (or adjust based on count)
+    // Remove any inline styles - CSS handles the layout
     stock.css({
-        display: 'grid',
-        gridTemplateColumns: 'repeat(4, 1fr)',
-        gap: '10px',
-        maxWidth: '400px',
-        margin: '0 auto'
+        display: '',
+        gridTemplateColumns: '',
+        gap: '',
+        maxWidth: '',
+        margin: ''
     });
     
     currentPlayerLetters.forEach((letter, index) => {
@@ -689,7 +689,8 @@ window.openGame = function(gameId) {
         if (gameData.status === 'waiting') {
             $('#turnIndicatorBanner').text('ממתין לשחקן שני').show();
         } else if (isMyTurn) {
-            $('#turnIndicatorBanner').text('התור שלך').show();
+            // Hide the banner when it's my turn - only show the finish turn button
+            $('#turnIndicatorBanner').hide();
         } else {
             $('#turnIndicatorBanner').text('ממתין ליריב').show();
         }
