@@ -6,15 +6,20 @@ import { auth, db, googleProvider } from './firebase.js';
 // Current user state
 let currentUser = null;
 let authStateListeners = [];
+let authInitialized = false; // Track if Firebase has determined auth state
 
 // Listen to auth state changes
+// This fires once immediately after app start, then again on any auth change
 onAuthStateChanged(auth, async (user) => {
   currentUser = user;
+  authInitialized = true; // Mark as initialized after first fire
+  
   if (user) {
     // Create or update user profile
     await createOrUpdateUserProfile(user);
   }
-  // Notify all listeners
+  
+  // Notify all listeners - Firebase's listener ensures this happens after initialization
   authStateListeners.forEach(listener => listener(user));
 });
 
@@ -72,12 +77,18 @@ export function getCurrentUser() {
 }
 
 // Subscribe to auth state changes
+// Following Firebase best practices: only call callback after Firebase has initialized
 export function onAuthStateChange(callback) {
   authStateListeners.push(callback);
-  // Immediately call with current state
-  if (currentUser !== null) {
+  
+  // Only call immediately if Firebase has already determined the auth state
+  // Otherwise, wait for onAuthStateChanged to fire (which happens immediately on app start)
+  if (authInitialized) {
+    // Firebase has already initialized, safe to call with current state
     callback(currentUser);
   }
+  // If not initialized yet, the callback will be called when onAuthStateChanged fires
+  
   // Return unsubscribe function
   return () => {
     authStateListeners = authStateListeners.filter(l => l !== callback);

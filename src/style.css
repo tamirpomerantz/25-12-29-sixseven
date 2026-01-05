@@ -119,18 +119,17 @@ h1 {
 }
 
 .letter-stock {
-    display: flex;
-    flex-wrap: nowrap;
-    gap: 0;
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(48px, 48px));
+    gap: 4px;
     margin-bottom: 20px;
-    padding: 0;
+    padding: 4px;
     background-color: transparent;
     border-radius: 0;
-    align-items: center;
     touch-action: none; /* Prevent touch scrolling on stock */
-    overflow-x: visible;
-    overflow-y: visible;
     justify-content: center;
+    justify-items: center;
+    max-width: 100%;
     min-height: 48px;
 }
 
@@ -146,6 +145,29 @@ h1 {
     border: 2px dashed #2B749F;
     border-radius: 4px;
     visibility: visible !important;
+}
+
+/* SortableJS styles for letter bank */
+.sortable-ghost {
+    opacity: 0.4;
+    background-color: rgba(43, 116, 159, 0.2) !important;
+    border: 2px dashed #2B749F !important;
+    box-shadow: none !important;
+}
+
+.sortable-chosen {
+    opacity: 0.8;
+    transform: scale(1.05);
+    z-index: 1000;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3) !important;
+}
+
+.sortable-drag {
+    opacity: 0.9;
+    transform: scale(1.1) rotate(2deg);
+    z-index: 1001;
+    box-shadow: 0 6px 16px rgba(0, 0, 0, 0.4) !important;
+    cursor: grabbing !important;
 }
 
 .timer-progress {

@@ -41,6 +41,7 @@ let tileData = {}; // Map of tileId -> {letter, x, y, element}
 let currentGame = null;
 let isMyTurn = false;
 let cellSize = 48; // Size of each grid cell in pixels
+let letterStockSortable = null; // SortableJS instance for letter bank
 
 // Random number generator
 function random() {
@@ -173,9 +174,9 @@ function makeDraggable($element) {
     $element.draggable({
         revert: 'invalid',
         cursor: 'move',
-        distance: 10,
+        distance: 5, // Lower distance for quicker response when dragging to board
         scroll: false,
-        start: function() {
+        start: function(event, ui) {
             // Only allow dragging if it's TEMP or from stock
             const isTemp = $(this).attr('data-temp') === 'true';
             const isFromStock = $(this).parent().hasClass('letter-stock');
@@ -184,12 +185,33 @@ function makeDraggable($element) {
                 return false; // Prevent dragging locked tiles
             }
             
+            // If SortableJS is active (user held for delay), cancel jQuery UI drag
+            if (isFromStock && $(this).data('sortable-active')) {
+                return false;
+            }
+            
+            // When dragging from stock to board (quick drag), disable and cancel SortableJS
+            if (isFromStock && letterStockSortable) {
+                letterStockSortable.option('disabled', true);
+                // Cancel any pending SortableJS drag
+                $(this).data('sortable-active', false);
+            }
+            
             $(this).css('opacity', '0.5');
             $('body').css('overflow', 'hidden');
         },
-        stop: function() {
+        stop: function(event, ui) {
             $(this).css('opacity', '1');
             $('body').css('overflow', '');
+            
+            // Re-enable SortableJS after drag ends (if item is still in stock)
+            const isFromStock = $(this).parent().hasClass('letter-stock');
+            if (isFromStock && letterStockSortable) {
+                // Only re-enable if item is still in stock (wasn't moved to board)
+                if ($(this).parent().hasClass('letter-stock')) {
+                    letterStockSortable.option('disabled', false);
+                }
+            }
         }
     });
 }
@@ -306,6 +328,13 @@ async function saveBoardState() {
 // Update letter stock display
 function updateLetterStock() {
     const stock = $('#letterStock');
+    
+    // Destroy existing SortableJS instance if it exists
+    if (letterStockSortable) {
+        letterStockSortable.destroy();
+        letterStockSortable = null;
+    }
+    
     stock.empty();
     
     // Remove any inline styles - CSS handles the layout
@@ -321,14 +350,77 @@ function updateLetterStock() {
         const tile = $('<div>')
             .addClass('letter-tile')
             .text(letter)
-            .attr('data-letter', letter);
+            .attr('data-letter', letter)
+            .attr('data-letter-index', index);
             // CSS is handled by .letter-tile class in style.css
         
+        // Make draggable for board drops (jQuery UI)
         makeDraggable(tile);
         stock.append(tile);
     });
     
-    // Make stock droppable
+    // Initialize SortableJS for grid-based sorting within the bank
+    if (typeof Sortable !== 'undefined') {
+        letterStockSortable = new Sortable(stock[0], {
+            animation: 200,
+            easing: 'cubic-bezier(0.4, 0, 0.2, 1)',
+            ghostClass: 'sortable-ghost',
+            chosenClass: 'sortable-chosen',
+            dragClass: 'sortable-drag',
+            fallbackOnBody: true,
+            swapThreshold: 0.65,
+            invertSwap: false,
+            direction: 'horizontal', // For RTL, but grid will handle layout
+            forceFallback: false,
+            fallbackTolerance: 0,
+            touchStartThreshold: 5,
+            delay: 150, // Delay to allow quick drags to board to use jQuery UI instead
+            delayOnTouchStart: true,
+            delayOnTouchOnly: false,
+            onStart: function(evt) {
+                // When starting to drag within bank, mark it and disable jQuery UI
+                const $item = $(evt.item);
+                $item.data('sortable-active', true);
+                // Temporarily disable jQuery UI draggable to prevent conflicts
+                if ($item.data('ui-draggable')) {
+                    $item.draggable('disable');
+                }
+            },
+            onEnd: function(evt) {
+                // Update currentPlayerLetters array based on new order
+                const newOrder = [];
+                $(stock.children()).each(function() {
+                    const letter = $(this).attr('data-letter');
+                    if (letter) {
+                        newOrder.push(letter);
+                    }
+                });
+                
+                // Only update if order actually changed
+                if (newOrder.length === currentPlayerLetters.length) {
+                    let orderChanged = false;
+                    for (let i = 0; i < newOrder.length; i++) {
+                        if (newOrder[i] !== currentPlayerLetters[i]) {
+                            orderChanged = true;
+                            break;
+                        }
+                    }
+                    if (orderChanged) {
+                        currentPlayerLetters = newOrder;
+                    }
+                }
+                
+                // Re-enable jQuery UI draggable
+                const $item = $(evt.item);
+                $item.data('sortable-active', false);
+                if ($item.data('ui-draggable')) {
+                    $item.draggable('enable');
+                }
+            }
+        });
+    }
+    
+    // Make stock droppable for returning tiles from board (jQuery UI)
     stock.droppable({
         accept: '.letter-tile',
         tolerance: 'pointer',
@@ -1011,7 +1103,8 @@ function initApp() {
     });
     
     // Check for pending invitations on login
-    // This will be called immediately with current user if exists (handled in auth.js)
+    // This callback is called by Firebase's onAuthStateChanged after auth state is determined
+    // Following Firebase best practices: wait for listener to fire, don't check currentUser directly
     onAuthStateChange(async (user) => {
         if (user) {
             // Show only first word of display name
